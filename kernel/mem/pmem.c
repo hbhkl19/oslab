@@ -5,7 +5,7 @@
 #include "memlayout.h"
 #include "lib/string.h"
 
-#define KERNEL_PAGES 4096   // 16MB
+#define KERNEL_PAGES 1024   // 将原来的内核物理页数由16MB(4096页)改为4MB(1024页)
 
 
 typedef struct page_node { 
@@ -53,11 +53,19 @@ void pmem_init(void) {
 
     // 将所有可用物理页加入到对应的空闲链表中
     // 这里通过调用 pmem_free 来完成初始化
-    for (uint64 p = kern_region.begin; p < kern_region.end; p += PGSIZE) {
+    // for (uint64 p = kern_region.begin; p < kern_region.end; p += PGSIZE) {
+    //     pmem_free(p, true);
+    // }
+
+    // for (uint64 p = user_region.begin; p < user_region.end; p += PGSIZE) {
+    //     pmem_free(p, false);
+    // }
+
+    // 逆序初始化，让低地址页面先被分配
+    for (uint64 p = kern_region.end - PGSIZE; p >= kern_region.begin; p -= PGSIZE) {
         pmem_free(p, true);
     }
-
-    for (uint64 p = user_region.begin; p < user_region.end; p += PGSIZE) {
+    for (uint64 p = user_region.end - PGSIZE; p >= user_region.begin; p -= PGSIZE) {
         pmem_free(p, false);
     }
 }
