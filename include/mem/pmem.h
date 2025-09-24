@@ -6,7 +6,7 @@
 // 来自kernel.ld
 extern char KERNEL_DATA[];
 extern char ALLOC_BEGIN[];
-extern char ALLOC_END[];
+//extern char ALLOC_END[];
 
 void  pmem_init(void);
 void* pmem_alloc(bool in_kernel);

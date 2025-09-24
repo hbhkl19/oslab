@@ -26,6 +26,7 @@ SECTIONS
 
   .data : {
     . = ALIGN(16);
+    PROVIDE(KERNEL_DATA = .);
     *(.sdata .sdata.*) /* do not need to distinguish this from .data */
     . = ALIGN(16);
     *(.data .data.*)
@@ -39,4 +40,5 @@ SECTIONS
   }
 
   PROVIDE(end = .);
+  PROVIDE(ALLOC_BEGIN = .);
 }
