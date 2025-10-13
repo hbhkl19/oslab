@@ -181,12 +181,11 @@ void kvm_inithart() {
 
 
 
-
+//======================================= 页表打印功能 ====================================
 // 计算虚拟地址范围
 static uint64 calc_va_start(int level2_idx, int level1_idx, int level0_idx) {
     return ((uint64)level2_idx << 30) | ((uint64)level1_idx << 21) | ((uint64)level0_idx << 12);
 }
-
 // 打印权限的辅助函数
 static void print_permissions(pte_t pte) {
     if (pte & PTE_R) printf("r"); else printf("-");
@@ -194,7 +193,6 @@ static void print_permissions(pte_t pte) {
     if (pte & PTE_X) printf("x"); else printf("-");
     if (pte & PTE_U) printf("u"); else printf("-");
 }
-
 // 判断地址范围的辅助函数
 static const char* get_region_name(uint64 va, uint64 pa) {
     // 根据虚拟地址判断区域
@@ -205,7 +203,6 @@ static const char* get_region_name(uint64 va, uint64 pa) {
     //if (va == TRAMPOLINE) return "TRAMPOLINE";
     return "UNKNOWN";
 }
-
 static void print_hex_padded(uint64 value) {
     printf("0x");
     // 从高位开始打印，确保16位
@@ -220,8 +217,6 @@ static void print_hex_padded(uint64 value) {
         }
     }
 }
-
-
 static void vm_print_recursive_new(pgtbl_t pgtbl, int level, int indices[3]) {
     for (int i = 0; i < 512; i++) {
         pte_t pte = pgtbl[i];
@@ -249,7 +244,6 @@ static void vm_print_recursive_new(pgtbl_t pgtbl, int level, int indices[3]) {
         }
     }
 }
-
 void vm_print(pgtbl_t pgtbl) {
     printf("\n=== KERNEL PAGE TABLE MAPPINGS ===\n");
     printf("Root Page Table: %p\n\n", pgtbl);
@@ -263,3 +257,4 @@ void vm_print(pgtbl_t pgtbl) {
     printf("  Legend: r=read, w=write, x=execute, u=user\n");
     printf("=== END PAGE TABLE ===\n\n");
 }
+//=========================================================================================
