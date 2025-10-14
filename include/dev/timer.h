@@ -2,6 +2,7 @@
 #define __TIMER_H__
 
 #include "lib/lock.h"
+#include "memlayout.h"
 
 // 计时器
 typedef struct timer {

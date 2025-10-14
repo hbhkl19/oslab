@@ -12,7 +12,7 @@ kernel_vector:
 
         # 寄存器状态保存
         sd ra, 0(sp)
-        sd sp, 8(sp)
+        # sd sp, 8(sp)
         sd gp, 16(sp)
         sd tp, 24(sp)
         sd t0, 32(sp)
@@ -48,7 +48,7 @@ kernel_vector:
 
         # 寄存器状态恢复
         ld ra, 0(sp)
-        ld sp, 8(sp)
+        # ld sp, 8(sp)
         ld gp, 16(sp)
         # tp寄存器的值可能不可靠
         # ld tp, 24(sp)

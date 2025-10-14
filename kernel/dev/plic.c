@@ -2,7 +2,7 @@
 
 #include "memlayout.h"
 #include "dev/plic.h"
-#include "proc/cpu.h"
+#include "proc/proc.h"
 
 // PLIC初始化
 void plic_init()

@@ -3,7 +3,7 @@
 #include "dev/uart.h"
 #include "dev/plic.h"
 #include "trap/trap.h"
-#include "proc/cpu.h"
+#include "proc/proc.h"
 #include "memlayout.h"
 #include "riscv.h"
 
@@ -54,13 +54,14 @@ extern void kernel_vector();
 // 初始化trap中全局共享的东西
 void trap_kernel_init()
 {
-
+    timer_create();
 }
 
 // 各个核心trap初始化
 void trap_kernel_inithart()
 {
-
+    // 设置内核态trap入口地址
+    w_stvec((uint64)kernel_vector);
 }
 
 // 外设中断处理 (基于PLIC)
@@ -69,10 +70,27 @@ void external_interrupt_handler()
 
 }
 
+
+static volatile int interrupt_count = 0;
+static volatile int last_print_count = 0;
+
 // 时钟中断处理 (基于CLINT)
 void timer_interrupt_handler()
 {
+    // 只在CPU 0上更新系统时钟
+    if(mycpuid() == 0) {
+        timer_update();  // ticks++
+        
+        // 每 10 个中断打印一次（避免刷屏）
+        if(interrupt_count % 10 == 0 && interrupt_count != last_print_count) {
+            printf("tick: %d\n", timer_get_ticks());
+            last_print_count = interrupt_count;
+        }
+    }
 
+    //预留调度接口
+    //    if(myproc() != 0 && myproc()->state == RUNNING)
+    //        yield();  // 强制调度
 }
 
 // 在kernel_vector()里面调用
@@ -88,7 +106,59 @@ void trap_kernel_handler()
     assert(sstatus & SSTATUS_SPP, "trap_kernel_handler: not from s-mode");
     assert(intr_get() == 0, "trap_kernel_handler: interreput enabled");
 
-    int trap_id = scause & 0xf; 
+    //int trap_id = scause & 0xf; 
 
     // 中断异常处理核心逻辑
+    // 判断是中断还是异常
+    if(scause & (1UL << 63)) {
+        // 最高位为1，表示是中断
+        int interrupt_id = scause & 0xf;
+        
+        // 打印中断信息（调试用）
+        // printf("Interrupt: %s\n", interrupt_info[interrupt_id]);
+        
+        if(interrupt_id == 1) {
+            // S-mode 软件中断（来自M-mode的时钟中断转发）
+            // 清除软件中断标志
+            w_sip(r_sip() & ~2);
+            
+            // 处理时钟中断
+            timer_interrupt_handler();
+        }
+        else if(interrupt_id == 9) {
+            // S-mode 外设中断
+            external_interrupt_handler();
+        }
+        else {
+            // 未知中断
+            printf("Unknown interrupt: %s (id=%d)\n", 
+                   interrupt_info[interrupt_id], interrupt_id);
+            printf("sepc=%p stval=%p\n", sepc, stval);
+        }
+    }
+    else {
+        // 最高位为0，表示是异常
+        int exception_id = scause & 0xf;
+        
+        printf("Exception in kernel: %s\n", exception_info[exception_id]);
+        printf("sepc=%p stval=%p\n", sepc, stval);
+        
+        // 异常处理
+        switch(exception_id) {
+            case 2:  // Illegal instruction
+                panic("Illegal instruction in kernel");
+                break;
+            case 12: // Instruction page fault
+            case 13: // Load page fault
+            case 15: // Store page fault
+                panic("Page fault in kernel");
+                break;
+            default:
+                panic("Unexpected exception in kernel");
+        }
+    }
+    
+    // 恢复寄存器（重要！）
+    w_sepc(sepc);
+    w_sstatus(sstatus);
 }

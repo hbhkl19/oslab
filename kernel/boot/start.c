@@ -1,4 +1,5 @@
 #include "riscv.h"
+#include "dev/timer.h"
 
 void main();
 void timerinit();
@@ -19,12 +20,12 @@ void start()
 
   w_medeleg(0xffff);
   w_mideleg(0xffff);
-  w_sie(r_sie() | SIE_SEIE | SIE_STIE);
+  w_sie(r_sie() | SIE_SEIE | SIE_STIE | SIE_SSIE);
 
   w_pmpaddr0(0x3fffffffffffffull);
   w_pmpcfg0(0xf);
 
-  timerinit();
+  timer_init();
 
   int id = r_mhartid();
   w_tp(id);
@@ -32,7 +33,7 @@ void start()
   asm volatile("mret");
 }
 
-
+/*取消S模式对时钟中断的委托
 void
 timerinit()
 {
@@ -47,4 +48,4 @@ timerinit()
   
   // ask for the very first timer interrupt.
   w_stimecmp(r_time() + 1000000);
-}
+}*/
