@@ -1,3 +1,4 @@
+//测试多核下自旋锁的正确性和输出功能
 // #include "riscv.h"
 // #include "lib/print.h"
 // #include"proc/proc.h"
@@ -51,7 +52,7 @@
 //     while (1);    
 // }
 
-
+//测试物理内存分配器的多核并发
 // #include "riscv.h"
 // #include "lib/print.h"
 // #include "proc/proc.h"
@@ -145,7 +146,7 @@
 //     while (1);    
 // }
 
-
+//测试物理内存分配器的多核并发
 /*
 #include "riscv.h"
 #include "lib/print.h"
@@ -211,6 +212,8 @@ int main()
     while (1);    
 }
 */
+
+//测试虚拟内存映射
 /*
 #include "riscv.h"
 #include "lib/print.h"
@@ -267,11 +270,14 @@ int main()
     while (1);    
 } */
 
+//测试timer中断
+/*
 #include "riscv.h"
 #include "lib/print.h"
 #include "mem/pmem.h"
 #include "mem/vmem.h"
 #include "trap/trap.h"
+#include "dev/uart.h"
 #include "dev/timer.h"
 
 volatile static int started = 0;
@@ -294,6 +300,9 @@ int main()
         kvm_init();
         kvm_inithart();
         printf("Virtual memory initialized\n");
+
+        uart_init();
+        printf("UART initialized\n");
 
         // 初始化中断系统
         trap_kernel_init();
@@ -459,5 +468,122 @@ int main()
     }
 
     printf("cpu %d entering idle loop\n", cpuid);
+    while (1);
+}*/
+
+//测试plic--uart中断
+#include "riscv.h"
+#include "lib/print.h"
+#include "mem/pmem.h"
+#include "mem/vmem.h"
+#include "trap/trap.h"
+#include "dev/timer.h"
+#include "dev/uart.h"
+#include "dev/plic.h"
+
+volatile static int started = 0;
+
+// 用于验证中断的全局计数器
+volatile int uart_interrupt_count = 0;
+
+int main()
+{
+    int cpuid = r_tp();
+
+    if(cpuid == 0) {
+        print_init();
+        printf("\n=== OS Kernel Booting ===\n\n");
+
+        // 初始化
+        pmem_init();
+        kvm_init();
+        kvm_inithart();
+        trap_kernel_init();
+        trap_kernel_inithart();
+        
+        // ⭐ 关键：初始化 UART（使能中断）
+        uart_init();
+        
+        printf("Initialization complete\n");
+        printf("UART interrupts: %s\n\n", 
+               "Enabled (IER configured)");
+
+        // ==================== UART 中断测试 ====================
+        printf("=== UART Interrupt Test ===\n\n");
+        
+        // 测试前状态
+        printf("Before test:\n");
+        printf("  sstatus.SIE = %d\n", intr_get());
+        printf("  UART IRQ count = %d\n\n", uart_interrupt_count);
+        
+        // ⭐ 使能中断
+        intr_on();
+        
+        printf("After intr_on():\n");
+        printf("  sstatus.SIE = %d\n\n", intr_get());
+        
+        // ==================== 核心测试：验证是中断不是轮询 ====================
+        printf("╔════════════════════════════════════════╗\n");
+        printf("║  INTERRUPT VERIFICATION TEST           ║\n");
+        printf("║                                        ║\n");
+        printf("║  Type some characters...               ║\n");
+        printf("║  They will echo if interrupts work    ║\n");
+        printf("║                                        ║\n");
+        printf("║  Waiting 10 seconds...                 ║\n");
+        printf("╚════════════════════════════════════════╝\n\n");
+        
+        // 关键：主循环完全不调用任何 UART 轮询函数
+        // 如果字符能回显，说明是中断驱动的
+        uint64 start_tick = timer_get_ticks();
+        uint64 last_count = uart_interrupt_count;
+        int dots = 0;
+        
+        while(timer_get_ticks() < start_tick + 100) {  // 等待 ~10 秒
+            // 完全不做任何 UART 操作
+            // 只检查中断计数是否变化
+            
+            if(timer_get_ticks() % 10 == 0 && dots < 10) {
+                printf(".");
+                dots++;
+            }
+            
+            // 延迟循环（模拟其他工作）
+            for(volatile int i = 0; i < 100000; i++);
+        }
+        
+        printf("\n\n");
+        
+        // ==================== 测试结果 ====================
+        printf("=== Test Results ===\n\n");
+        printf("UART interrupt count: %d -> %d\n", 
+               last_count, uart_interrupt_count);
+        
+        if(uart_interrupt_count > last_count) {
+            printf("\n✓ SUCCESS: UART interrupts are working!\n");
+            printf("  Received %d interrupts during test\n", 
+                   uart_interrupt_count - last_count);
+            printf("  Characters echoed via interrupt handler\n");
+        } else {
+            printf("\n✗ FAIL: No UART interrupts detected\n");
+            printf("  Possible issues:\n");
+            printf("  - uart_init() not called\n");
+            printf("  - PLIC not configured\n");
+            printf("  - Interrupts not enabled\n");
+        }
+        
+        printf("\n=== Test Complete ===\n\n");
+
+        __sync_synchronize();
+        started = 1;
+
+    } else {
+        while(started == 0);
+        __sync_synchronize();
+
+        kvm_inithart();
+        trap_kernel_inithart();
+        intr_on();
+    }
+
     while (1);
 }

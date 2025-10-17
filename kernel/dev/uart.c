@@ -84,6 +84,8 @@ int uart_getc_sync(void)
   }
 }
 
+//该变量用于测试uart中断处理函数的调用次数
+extern volatile int uart_interrupt_count;
 // 中断处理(键盘输入->屏幕输出)
 void uart_intr(void)
 {
@@ -91,6 +93,7 @@ void uart_intr(void)
   {
     int c = uart_getc_sync();
     if(c == -1) break;
+    uart_interrupt_count++;
     uart_putc_sync(c);
   }
 }

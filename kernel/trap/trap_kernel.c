@@ -1,4 +1,4 @@
-#include "lib/print.h"
+ #include "lib/print.h"
 #include "dev/timer.h"
 #include "dev/uart.h"
 #include "dev/plic.h"
@@ -55,6 +55,7 @@ extern void kernel_vector();
 void trap_kernel_init()
 {
     timer_create();
+    plic_init();
 }
 
 // 各个核心trap初始化
@@ -62,12 +63,33 @@ void trap_kernel_inithart()
 {
     // 设置内核态trap入口地址
     w_stvec((uint64)kernel_vector);
+    plic_inithart();
 }
 
 // 外设中断处理 (基于PLIC)
 void external_interrupt_handler()
 {
-
+    int irq = plic_claim();
+    
+    if(irq == 0) {
+        // irq为0表示没有待处理的中断(不应该发生)
+        printf("Warning: spurious external interrupt\n");
+        return;
+    }
+    if(irq == UART_IRQ) {
+        uart_intr();
+    }
+    /*
+    else if(irq == VIRTIO_IRQ) {
+        // 处理VIRTIO磁盘中断
+        virtio_disk_intr();
+    }
+    */
+    else {
+        printf("Unknown external interrupt: irq=%d\n", irq);
+    }
+    
+    plic_complete(irq);
 }
 
 
@@ -81,6 +103,7 @@ void timer_interrupt_handler()
     if(mycpuid() == 0) {
         timer_update();  // ticks++
         
+        //调试用！！！
         // 每 10 个中断打印一次（避免刷屏）
         if(interrupt_count % 10 == 0 && interrupt_count != last_print_count) {
             printf("tick: %d\n", timer_get_ticks());
@@ -106,9 +129,6 @@ void trap_kernel_handler()
     assert(sstatus & SSTATUS_SPP, "trap_kernel_handler: not from s-mode");
     assert(intr_get() == 0, "trap_kernel_handler: interreput enabled");
 
-    //int trap_id = scause & 0xf; 
-
-    // 中断异常处理核心逻辑
     // 判断是中断还是异常
     if(scause & (1UL << 63)) {
         // 最高位为1，表示是中断

@@ -2,7 +2,6 @@
 #include "dev/timer.h"
 
 void main();
-void timerinit();
 
 __attribute__ ((aligned (16))) uint8 CPU_stack[4096 * NCPU];
 
