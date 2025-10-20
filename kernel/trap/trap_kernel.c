@@ -76,18 +76,24 @@ void external_interrupt_handler()
         printf("Warning: spurious external interrupt\n");
         return;
     }
-    if(irq == UART_IRQ) {
-        uart_intr();
+
+    switch(irq) {
+        case UART_IRQ:
+            // 处理UART中断
+            uart_intr();
+            break;
+        /*    
+        case VIRTIO_IRQ:
+            // 处理VIRTIO磁盘中断
+            // virtio_disk_intr();
+            break;
+        */    
+        default:
+            // 未知的外设中断
+            printf("Unknown external interrupt: irq=%d\n", irq);
+            break;
     }
-    /*
-    else if(irq == VIRTIO_IRQ) {
-        // 处理VIRTIO磁盘中断
-        virtio_disk_intr();
-    }
-    */
-    else {
-        printf("Unknown external interrupt: irq=%d\n", irq);
-    }
+    
     
     plic_complete(irq);
 }
@@ -137,23 +143,27 @@ void trap_kernel_handler()
         // 打印中断信息（调试用）
         // printf("Interrupt: %s\n", interrupt_info[interrupt_id]);
         
-        if(interrupt_id == 1) {
-            // S-mode 软件中断（来自M-mode的时钟中断转发）
-            // 清除软件中断标志
-            w_sip(r_sip() & ~2);
-            
-            // 处理时钟中断
-            timer_interrupt_handler();
-        }
-        else if(interrupt_id == 9) {
-            // S-mode 外设中断
-            external_interrupt_handler();
-        }
-        else {
-            // 未知中断
-            printf("Unknown interrupt: %s (id=%d)\n", 
-                   interrupt_info[interrupt_id], interrupt_id);
-            printf("sepc=%p stval=%p\n", sepc, stval);
+        switch(interrupt_id) {
+            case 1:
+                // S-mode 软件中断（来自M-mode的时钟中断转发）
+
+                // 清除软件中断标志
+                w_sip(r_sip() & ~2);
+                // 处理时钟中断
+                timer_interrupt_handler();
+                break;
+                
+            case 9:
+                // S-mode 外设中断
+                external_interrupt_handler();
+                break;
+                
+            default:
+                // 未知中断
+                printf("Unknown interrupt: %s (id=%d)\n", 
+                       interrupt_info[interrupt_id], interrupt_id);
+                printf("sepc=%p stval=%p\n", sepc, stval);
+                break;
         }
     }
     else {
