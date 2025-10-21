@@ -84,16 +84,29 @@ int uart_getc_sync(void)
   }
 }
 
-//该变量用于测试uart中断处理函数的调用次数
-extern volatile int uart_interrupt_count;
+
 // 中断处理(键盘输入->屏幕输出)
 void uart_intr(void)
 {
-  while(1)
-  {
-    int c = uart_getc_sync();
-    if(c == -1) break;
-    uart_interrupt_count++;
-    uart_putc_sync(c);
-  }
+    while(1) {
+        int c = uart_getc_sync();
+        if(c == -1) break;
+        
+        // 处理 Enter 键
+        if(c == '\r' || c == '\n') {
+            uart_putc_sync('\r');
+            uart_putc_sync('\n');
+        }
+        // 处理 Backspace
+        else if(c == 127 || c == '\b') {
+            uart_putc_sync('\b');
+            uart_putc_sync(' ');
+            uart_putc_sync('\b');
+        }
+        // 处理可打印字符
+        else if(c >= 32 && c < 127) {
+            uart_putc_sync(c);
+        }
+        // 忽略其他控制字符
+    }
 }

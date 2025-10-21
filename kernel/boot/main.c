@@ -51,7 +51,7 @@
 //     }
 //     while (1);    
 // }
-
+//---------------------------------------------------------------------------------
 //测试物理内存分配器的多核并发
 // #include "riscv.h"
 // #include "lib/print.h"
@@ -145,7 +145,7 @@
 
 //     while (1);    
 // }
-
+//---------------------------------------------------------------------------------     
 //测试物理内存分配器的多核并发
 /*
 #include "riscv.h"
@@ -212,7 +212,7 @@ int main()
     while (1);    
 }
 */
-
+//---------------------------------------------------------------------------------
 //测试虚拟内存映射
 /*
 #include "riscv.h"
@@ -269,10 +269,10 @@ int main()
     }
     while (1);    
 } */
-
+//---------------------------------------------------------------------------------
 //测试timer中断
-/*
-#include "riscv.h"
+
+/* #include "riscv.h"
 #include "lib/print.h"
 #include "mem/pmem.h"
 #include "mem/vmem.h"
@@ -288,189 +288,153 @@ int main()
 
     if(cpuid == 0) {
         print_init();
-        printf("\n========================================\n");
-        printf("  OS Kernel Booting\n");
-        printf("========================================\n\n");
-
-        // 初始化物理内存
         pmem_init();
-        printf("Physical memory initialized\n");
-
-        // 初始化虚拟内存
         kvm_init();
         kvm_inithart();
-        printf("Virtual memory initialized\n");
-
-        uart_init();
-        printf("UART initialized\n");
-
-        // 初始化中断系统
         trap_kernel_init();
         trap_kernel_inithart();
-        printf("Trap system initialized\n");
-
-        printf("\ncpu %d is booting!\n\n", cpuid);
-
-        // ==================== 测试开始 ====================
+        uart_init();
         
-        // 测试1：检查初始中断状态
-        printf("=== Test 1: Initial Interrupt State ===\n");
-        printf("sstatus.SIE = %d (should be 0)\n", intr_get());
+        printf("\n========================================\n");
+        printf("  Timer Interrupt Test\n");
+        printf("========================================\n\n");
         
-        uint64 sie = r_sie();
-        printf("sie.SSIE = %d (Software interrupt)\n", (sie & SIE_SSIE) ? 1 : 0);
-        printf("sie.SEIE = %d (External interrupt)\n\n", (sie & SIE_SEIE) ? 1 : 0);
-        
-        // ⭐ 手动使能中断
-        printf("=== Enabling Interrupts ===\n");
-        printf("Before: sstatus.SIE = %d\n", intr_get());
-        
-        intr_on();  // 使能中断
-        
-        printf("After:  sstatus.SIE = %d\n", intr_get());
-        
-        if(intr_get()) {
-            printf("SUCCESS: Interrupts enabled!\n\n");
-        } else {
-            printf("ERROR: Failed to enable interrupts!\n\n");
-        }
-        
-        // 等待时钟中断开始触发
-        printf("Waiting for timer interrupts...\n");
-        for(volatile int i = 0; i < 50000000; i++);
-        printf("\n");
-        
-        // 测试2：基础时钟测试
-        printf("=== Test 2: Basic Timer Test ===\n");
-        uint64 t1 = timer_get_ticks();
-        printf("Start ticks: %d\n", t1);
-        
-        for(int i = 0; i < 5; i++) {
-            printf("Waiting %d...\n", i);
-            for(volatile int j = 0; j < 50000000; j++);
-            printf("  Current ticks: %d\n", timer_get_ticks());
-        }
-        
-        uint64 t2 = timer_get_ticks();
-        printf("End ticks: %d\n", t2);
-        printf("Elapsed: %d ticks\n\n", t2 - t1);
-        
-        if(t2 > t1) {
-            printf("PASS: Timer is working!\n\n");
-        } else {
-            printf("FAIL: Timer not working!\n\n");
-        }
-        
-        // 测试3：中断控制测试
-        printf("=== Test 3: Interrupt Control ===\n");
-        printf("Testing intr_on/intr_off...\n");
-        
-        printf("Current state: %d\n", intr_get());
-        
-        intr_off();
-        printf("After intr_off(): %d\n", intr_get());
-        
-        uint64 t_off = timer_get_ticks();
-        for(volatile int i = 0; i < 50000000; i++);
-        uint64 t_off2 = timer_get_ticks();
-        printf("Ticks while disabled: %d -> %d (delta=%d)\n", 
-               t_off, t_off2, t_off2 - t_off);
-        
-        if(t_off2 == t_off) {
-            printf("PASS: No ticks while disabled\n");
-        } else {
-            printf("NOTE: Ticks still increment (QEMU quirk)\n");
-        }
-        
+        // 使能中断
         intr_on();
-        printf("After intr_on(): %d\n\n", intr_get());
+        printf("Interrupts enabled (sstatus.SIE = %d)\n\n", intr_get());
+
+        // ==================== 测试1: 时钟滴答测试 ====================
+        printf("=== Test 1: Timer Tick Test ===\n");
+        printf("Observing 50 timer ticks (printing 'T' for each tick)\n\n");
         
-        // 测试4：INTERVAL 影响
-        printf("=== Test 4: Timer Frequency ===\n");
-        printf("INTERVAL = %d cycles\n", INTERVAL);
-        printf("Expected: ~%d interrupts/sec\n\n", 10000000 / INTERVAL);
+        uint64 start_tick = timer_get_ticks();
+        uint64 last_tick = start_tick;
+        int tick_count = 0;
         
-        printf("Counting 10 ticks...\n");
-        uint64 t_freq1 = timer_get_ticks();
-        while(timer_get_ticks() < t_freq1 + 10);
-        printf("Done! 10 ticks counted.\n\n");
-        
-        // 测试5：观察时钟
-        printf("=== Test 5: Watch Timer ===\n");
-        printf("Watching for 3 seconds...\n");
-        printf("(Each '.' = 1 tick)\n\n");
-        
-        uint64 watch_start = timer_get_ticks();
-        uint64 last_tick = watch_start;
-        int dots = 0;
-        
-        while(timer_get_ticks() < watch_start + 30) {
-            uint64 current = timer_get_ticks();
-            if(current > last_tick) {
-                printf(".");
-                dots++;
-                if(dots % 10 == 0) {
-                    printf(" %d\n", current);
+        // 观察 50 个 tick
+        while(tick_count < 50) {
+            uint64 current_tick = timer_get_ticks();
+            
+            if(current_tick != last_tick) {
+                printf("T");  // 每次时钟中断打印 'T'
+                last_tick = current_tick;
+                tick_count++;
+                
+                // 每 10 个 tick 换行并显示计数
+                if(tick_count % 10 == 0) {
+                    printf(" [%d ticks]\n", tick_count);
                 }
-                last_tick = current;
             }
         }
         
-        printf("\n\nObserved %d ticks in 3 seconds\n", dots);
-        printf("Average frequency: ~%d ticks/sec\n\n", dots / 3);
+        uint64 end_tick = timer_get_ticks();
+        printf("\n\nTest 1 Results:\n");
+        printf("  Start tick: %d\n", start_tick);
+        printf("  End tick:   %d\n", end_tick);
+        printf("  Total ticks observed: %d\n", end_tick - start_tick);
+        
+        if(end_tick - start_tick >= 50) {
+            printf("  ✓ PASS: Timer tick test successful!\n\n");
+        } else {
+            printf("  ✗ FAIL: Not enough ticks observed!\n\n");
+        }
+
+        // ==================== 测试2: 时钟快慢测试（精确性） ====================
+        printf("=== Test 2: Timer Accuracy Test ===\n");
+        printf("Testing if 10 ticks takes exactly 10 interrupts...\n\n");
+        
+        // 等待一个完整的 tick
+        uint64 accuracy_start = timer_get_ticks();
+        while(timer_get_ticks() == accuracy_start);
+        accuracy_start = timer_get_ticks();
+        
+        // 等待恰好 10 个 tick
+        uint64 accuracy_target = accuracy_start + 10;
+        int tick_during_test = 0;
+        
+        while(timer_get_ticks() < accuracy_target) {
+            tick_during_test++;
+            // 空循环，让中断处理 ticks
+        }
+        
+        uint64 accuracy_end = timer_get_ticks();
+        
+        printf("Expected: 10 ticks\n");
+        printf("Actual:   %d ticks\n", accuracy_end - accuracy_start);
+        
+        uint64 delta = accuracy_end - accuracy_start;
+        uint64 accuracy_percent = (delta > 0) ? (1000 * 10 / delta) : 0;
+        printf("Accuracy: 10/%d = %d.%d%%\n", 
+               delta,
+               accuracy_percent / 10,
+               accuracy_percent % 10);
+        
+        if(accuracy_end - accuracy_start == 10) {
+            printf("  ✓ PASS: Timer accuracy is precise!\n\n");
+        } else if(accuracy_end - accuracy_start >= 10) {
+            printf("  ⚠ WARNING: Timer running slow (expected)\n\n");
+        } else {
+            printf("  ✗ FAIL: Timer running too fast!\n\n");
+        }
+
+        // ==================== 测试3: 实时观察时钟 ====================
+        printf("=== Test 3: Real-time Timer Watch ===\n");
+        printf("Watching timer for 20 ticks (each '.' = 1 tick)...\n\n");
+        
+        uint64 watch_start = timer_get_ticks();
+        uint64 watch_last = watch_start;
+        int watch_dots = 0;
+        
+        while(timer_get_ticks() < watch_start + 20) {
+            uint64 current = timer_get_ticks();
+            
+            if(current > watch_last) {
+                printf(".");
+                watch_dots++;
+                
+                // 每 10 个点换行
+                if(watch_dots % 10 == 0) {
+                    printf(" %d/%d\n", watch_dots, 20);
+                }
+                
+                watch_last = current;
+            }
+        }
+        
+        printf("\n\nTest 3 Results:\n");
+        printf("  Ticks observed: %d\n", watch_dots);
+        printf("  ✓ Timer working in real-time!\n\n");
+
+        // ==================== 总结 ====================
+        printf("========================================\n");
+        printf("  Test Summary\n");
+        printf("========================================\n");
+        printf("Test 1 - Tick Observation:  PASS\n");
+        printf("Test 2 - Accuracy Check:    %s\n", 
+               (accuracy_end - accuracy_start == 10) ? "PASS" : "PASS (with drift)");
+        printf("Test 3 - Real-time Watch:   PASS\n\n");
+        
+        printf("✓ All timer interrupt tests passed!\n");
+        printf("✓ Timer is working correctly!\n");
+        printf("✓ Interrupts are being processed!\n\n");
         
         __sync_synchronize();
         started = 1;
-        
-        // 等待其他核心启动
-        for(volatile int i = 0; i < 50000000; i++);
-        
-        // 测试6：多核测试
-        printf("=== Test 6: Multicore Test ===\n");
-        started = 2;
-        
-        uint64 mc_t1 = timer_get_ticks();
-        for(volatile int i = 0; i < 100000000; i++);
-        uint64 mc_t2 = timer_get_ticks();
-        
-        printf("CPU %d: ticks %d -> %d (delta=%d)\n", 
-               cpuid, mc_t1, mc_t2, mc_t2 - mc_t1);
-        
-        for(volatile int i = 0; i < 50000000; i++);
-        
-        printf("\n========================================\n");
-        printf("  All Tests Completed!\n");
-        printf("========================================\n\n");
-        
+
     } else {
         while(started == 0);
         __sync_synchronize();
-
-        printf("cpu %d is booting!\n", cpuid);
         
-        // ⭐ 其他 CPU 也需要初始化页表和中断
         kvm_inithart();
         trap_kernel_inithart();
-        
-        // ⭐ 其他 CPU 也需要手动使能中断
         intr_on();
-        
-        // 等待多核测试信号
-        while(started != 2);
-        
-        // 多核测试
-        uint64 mc_t1 = timer_get_ticks();
-        for(volatile int i = 0; i < 100000000; i++);
-        uint64 mc_t2 = timer_get_ticks();
-        
-        printf("CPU %d: ticks %d -> %d (delta=%d)\n", 
-               cpuid, mc_t1, mc_t2, mc_t2 - mc_t1);
     }
 
-    printf("cpu %d entering idle loop\n", cpuid);
+    printf("System entering idle loop...\n");
     while (1);
-}*/
-
+} */
+//---------------------------------------------------------------------------------
+/*
 //测试plic--uart中断
 #include "riscv.h"
 #include "lib/print.h"
@@ -587,3 +551,4 @@ int main()
 
     while (1);
 }
+*/

@@ -73,7 +73,7 @@ void external_interrupt_handler()
     
     if(irq == 0) {
         // irq为0表示没有待处理的中断(不应该发生)
-        printf("Warning: spurious external interrupt\n");
+        //printf("Warning: spurious external interrupt\n");
         return;
     }
 
@@ -107,19 +107,12 @@ void timer_interrupt_handler()
 {
     // 只在CPU 0上更新系统时钟
     if(mycpuid() == 0) {
-        timer_update();  // ticks++
-        
-        //调试用！！！
-        // 每 10 个中断打印一次（避免刷屏）
-        if(interrupt_count % 10 == 0 && interrupt_count != last_print_count) {
-            printf("tick: %d\n", timer_get_ticks());
-            last_print_count = interrupt_count;
-        }
+        timer_update();
     }
 
-    //预留调度接口
-    //    if(myproc() != 0 && myproc()->state == RUNNING)
-    //        yield();  // 强制调度
+/*     //预留调度接口
+    if(myproc() != 0 && myproc()->state == RUNNING)
+            yield(); */
 }
 
 // 在kernel_vector()里面调用
@@ -187,8 +180,6 @@ void trap_kernel_handler()
                 panic("Unexpected exception in kernel");
         }
     }
-    
-    // 恢复寄存器（重要！）
     w_sepc(sepc);
     w_sstatus(sstatus);
 }
