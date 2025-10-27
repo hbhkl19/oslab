@@ -4,6 +4,7 @@
 #include "dev/plic.h"
 #include "trap/trap.h"
 #include "proc/proc.h"
+#include "proc/cpu.h"
 #include "memlayout.h"
 #include "riscv.h"
 
