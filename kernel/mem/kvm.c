@@ -189,80 +189,38 @@ void kvm_inithart() {
 
 
 
-//======================================= 页表打印功能 ====================================
-// 计算虚拟地址范围
-static uint64 calc_va_start(int level2_idx, int level1_idx, int level0_idx) {
-    return ((uint64)level2_idx << 30) | ((uint64)level1_idx << 21) | ((uint64)level0_idx << 12);
-}
-// 打印权限的辅助函数
-static void print_permissions(pte_t pte) {
-    if (pte & PTE_R) printf("r"); else printf("-");
-    if (pte & PTE_W) printf("w"); else printf("-");
-    if (pte & PTE_X) printf("x"); else printf("-");
-    if (pte & PTE_U) printf("u"); else printf("-");
-}
-// 判断地址范围的辅助函数
-static const char* get_region_name(uint64 va, uint64 pa) {
-    // 根据虚拟地址判断区域
-    if (va == UART_BASE) return "UART";
-    if (va >= PLIC_BASE && va < PLIC_BASE + 0x400000) return "PLIC";
-    if (va >= KERNEL_BASE && va < (uint64)etext) return "KERNEL_TEXT";
-    if (va >= (uint64)etext && va < PHYSTOP) return "KERNEL_DATA";
-    //if (va == TRAMPOLINE) return "TRAMPOLINE";
-    return "UNKNOWN";
-}
-static void print_hex_padded(uint64 value) {
-    printf("0x");
-    // 从高位开始打印，确保16位
-    int printed = 0;
-    for (int i = 60; i >= 0; i -= 4) {
-        uint64 digit = (value >> i) & 0xF;
-        if (digit != 0 || printed || i == 0) {
-            printf("%llx", digit);
-            printed = 1;
-        } else if (printed == 0) {
-            printf("0");  // 前导零
+// for debug
+// 输出页表内容
+void vm_print(pgtbl_t pgtbl)
+{
+    // 顶级页表，次级页表，低级页表
+    pgtbl_t pgtbl_2 = pgtbl, pgtbl_1 = NULL, pgtbl_0 = NULL;
+    pte_t pte;
+
+    printf("level-2 pgtbl: pa = %p\n", pgtbl_2);
+    for(int i = 0; i < PGSIZE / sizeof(pte_t); i++) 
+    {
+        pte = pgtbl_2[i];
+        if(!((pte) & PTE_V)) continue;
+        assert(PTE_CHECK(pte), "vm_print: pte check fail (1)");
+        pgtbl_1 = (pgtbl_t)PTE_TO_PA(pte);
+        printf(".. level-1 pgtbl %d: pa = %p\n", i, pgtbl_1);
+        
+        for(int j = 0; j < PGSIZE / sizeof(pte_t); j++)
+        {
+            pte = pgtbl_1[j];
+            if(!((pte) & PTE_V)) continue;
+            assert(PTE_CHECK(pte), "vm_print: pte check fail (2)");
+            pgtbl_0 = (pgtbl_t)PTE_TO_PA(pte);
+            printf(".. .. level-0 pgtbl %d: pa = %p\n", j, pgtbl_2);
+
+            for(int k = 0; k < PGSIZE / sizeof(pte_t); k++) 
+            {
+                pte = pgtbl_0[k];
+                if(!((pte) & PTE_V)) continue;
+                assert(!PTE_CHECK(pte), "vm_print: pte check fail (3)");
+                printf(".. .. .. physical page %d: pa = %p flags = %d\n", k, (uint64)PTE_TO_PA(pte), (int)PTE_FLAGS(pte));                
+            }
         }
     }
 }
-static void vm_print_recursive_new(pgtbl_t pgtbl, int level, int indices[3]) {
-    for (int i = 0; i < 512; i++) {
-        pte_t pte = pgtbl[i];
-        
-        if (!(pte & PTE_V)) continue;
-        
-        indices[level] = i;
-        
-        if (PTE_CHECK(pte) && level > 0) {
-            // 非叶子节点，继续递归
-            uint64 child_pa = PTE_TO_PA(pte);
-            vm_print_recursive_new((pgtbl_t)child_pa, level - 1, indices);
-        } else {
-            // 叶子节点，打印映射信息
-            uint64 va = calc_va_start(indices[2], indices[1], indices[0]);
-            uint64 pa = PTE_TO_PA(pte);
-            
-            printf("  VA: ");
-            print_hex_padded(va);
-            printf(" -> PA: ");
-            print_hex_padded(pa);
-            printf(" | ");
-            print_permissions(pte);
-            printf(" | %s\n", get_region_name(va, pa));
-        }
-    }
-}
-void vm_print(pgtbl_t pgtbl) {
-    printf("\n=== KERNEL PAGE TABLE MAPPINGS ===\n");
-    printf("Root Page Table: %p\n\n", pgtbl);
-    printf("  Virtual Address    ->  Physical Address   | Perm | Region\n");
-    printf("  ----------------------------------------------------------\n");
-    
-    int indices[3] = {0, 0, 0};
-    vm_print_recursive_new(pgtbl, 2, indices);
-    
-    printf("  ----------------------------------------------------------\n");
-    printf("  Legend: r=read, w=write, x=execute, u=user\n");
-    printf("=== END PAGE TABLE ===\n\n");
-}
-//=========================================================================================
