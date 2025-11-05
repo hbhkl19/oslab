@@ -80,6 +80,7 @@ user_vector:
 user_return:
 
         # 切换到用户页表
+        sfence.vma zero, zero
         csrw satp, a1
         sfence.vma zero, zero
 

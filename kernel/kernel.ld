@@ -8,12 +8,12 @@ SECTIONS
   .text : {
     *(.text .text.*)
     . = ALIGN(0x1000);
-    /*
+
     _trampoline = .;
     *(trampsec)
     . = ALIGN(0x1000);
     ASSERT(. - _trampoline == 0x1000, "error: trampoline larger than one page");
-    */
+
     PROVIDE(etext = .);
   }
 
@@ -34,9 +34,11 @@ SECTIONS
 
   .bss : {
     . = ALIGN(16);
+    PROVIDE(__bss_start = .);  /* 添加这行 - BSS 起始地址 */
     *(.sbss .sbss.*) /* do not need to distinguish this from .bss */
     . = ALIGN(16);
     *(.bss .bss.*)
+    PROVIDE(__bss_end = .);    /* 添加这行 - BSS 结束地址 */
   }
 
   PROVIDE(end = .);

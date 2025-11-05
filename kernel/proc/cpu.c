@@ -1,6 +1,6 @@
 #include "proc/cpu.h"
 #include "riscv.h"
-
+#include "lib/lock.h"
 static cpu_t cpus[NCPU];
 
 cpu_t* mycpu(void)

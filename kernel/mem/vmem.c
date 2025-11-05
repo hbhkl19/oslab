@@ -14,7 +14,9 @@
 
 static pgtbl_t kernel_pgtbl;
 
-extern char etext[]; 
+extern char etext[];
+
+extern char trampoline[];
 
 pte_t* vm_getpte(pgtbl_t pgtbl, uint64 va, bool alloc)
 {
@@ -32,16 +34,17 @@ pte_t* vm_getpte(pgtbl_t pgtbl, uint64 va, bool alloc)
         else 
         {
             if (alloc) {
-                pgtbl = (pgtbl_t)pmem_alloc(true); // 页表属于内核
-                if (pgtbl == NULL) {
-                    return NULL; // 物理内存不足
+                uint64 new_pgtbl = (uint64)pmem_alloc(true);  // 中间页表在内核
+                if (new_pgtbl == 0) {
+                    return NULL;
                 }
-                memset(pgtbl, 0, PGSIZE);
-                // 在当前PTE中填入新页表的物理地址, 并设置有效位
-                // 注意: 指向下一级页表的PTE, 其R/W/X权限位必须为0
-                *pte = PA_TO_PTE(pgtbl) | PTE_V;
+                memset((void*)new_pgtbl, 0, PGSIZE);
+                
+                // new_pgtbl 是虚拟地址，在内核等值映射中 VA == PA
+                *pte = PA_TO_PTE(new_pgtbl) | PTE_V;
+                
+                pgtbl = (pgtbl_t)new_pgtbl;  // 更新为新页表虚拟地址
             } else {
-                // 如果 alloc 为 false, 则直接返回 NULL
                 return NULL;
             }
         }
@@ -164,6 +167,11 @@ void kvm_init() {
     // 权限为 可读 | 可写 (RW-)
     uint64 pa_for_data = (uint64)etext;
     vm_mappages(kernel_pgtbl, pa_for_data, pa_for_data, PHYSTOP - pa_for_data, PTE_R | PTE_W);
+
+    // 6. 映射 trampoline (用于用户态和内核态切换)
+    vm_mappages(kernel_pgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+    //目前缺少对内核栈的映射, 因为只有一个初始进程，之后记得补上！
 }
 
 // kvm_inithart: 在每个CPU核上启用分页

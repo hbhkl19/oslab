@@ -552,3 +552,91 @@ int main()
     while (1);
 }
 */
+
+//测试初始进程
+/*
+ * main.c
+ * 内核主入口
+ * 负责初始化所有子系统并启动第一个进程
+ */
+
+#include "riscv.h"
+#include "lib/print.h"
+#include "mem/pmem.h"
+#include "mem/vmem.h"
+#include "trap/trap.h"
+#include "dev/timer.h"
+#include "dev/uart.h"
+#include "dev/plic.h"
+#include "proc/proc.h"
+
+// 标志，用于通知其他核心 CPU 0 已经完成了主要初始化
+volatile static int started = 0;
+
+int main()
+{
+    // 获取当前 CPU (hart) 的 ID
+    // start.c 已经将 hart id 写入了 tp 寄存器
+    int cpuid = r_tp();
+
+    if(cpuid == 0) {
+        // CPU 0 (主核心) 负责初始化所有全局系统
+        
+        print_init(); // 初始化 printf
+        printf("\n=== RISC-V OS Kernel Lab 4 ===\n\n");
+
+        printf("Initializing pmem (Physical Memory)...\n");
+        pmem_init();    // 初始化物理内存分配器
+        
+        printf("Initializing kvm (Kernel Virtual Memory)...\n");
+        kvm_init();     // 创建内核页表
+        
+        printf("Initializing kvm_inithart (CPU 0 Paging)...\n");
+        kvm_inithart(); // 在 CPU 0 上启用分页
+        
+        printf("Initializing trap_kernel_init (Traps)...\n");
+        trap_kernel_init(); // 初始化陷阱(timer, plic)
+        
+        printf("Initializing trap_kernel_inithart (CPU 0 Traps)...\n");
+        trap_kernel_inithart(); // 设置 CPU 0 的 stvec 和 plic
+        
+        printf("Initializing uart (Serial Device)...\n");
+        uart_init();    // 初始化 UART
+        intr_on();     // 启用 S-mode 中断 (时钟中断和外部中断)
+        printf("Initialization complete on CPU 0.\n\n");
+        
+        // 唤醒其他核心
+        __sync_synchronize();
+        
+        started = 1;
+        // 启动第一个用户进程
+        //
+        // 这个函数将不会返回，因为它会切换上下文
+        proc_make_fisrt();
+        
+
+    } else {
+        // 其他核心 (CPU 1...N)
+        
+        // 等待 CPU 0 完成初始化
+        while(started == 0);
+        __sync_synchronize();
+
+        printf("CPU %d hart starting...\n", cpuid);
+        
+        // 初始化此核心的虚拟内存
+        kvm_inithart(); // 在此 CPU 上启用分页
+        
+        // 初始化此核心的陷阱处理
+        trap_kernel_inithart(); // 设置此 CPU 的 stvec 和 plic
+        
+        printf("CPU %d finished init.\n", cpuid);
+    }
+
+    // 启用 S-mode 中断 (时钟中断和外部中断)
+   // intr_on(); //
+
+    // 其他核心将在此处无限循环
+    // CPU 0 此时应该在 proczero 的用户态中
+    while (1);
+}

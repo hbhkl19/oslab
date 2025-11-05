@@ -4,6 +4,7 @@
 #include "mem/vmem.h"
 #include "memlayout.h"
 #include "riscv.h"
+#include "user/syscall_num.h"
 
 // in trampoline.S
 extern char trampoline[];      // 内核和用户切换的代码
@@ -30,11 +31,108 @@ void trap_user_handler()
     // 确认trap来自U-mode
     assert((sstatus & SSTATUS_SPP) == 0, "trap_user_handler: not from u-mode");
 
+    w_stvec((uint64)kernel_vector); // 切换到内核trap处理入口
+
+    p->tf->epc = sepc;
+    //p->tf->sstatus = sstatus;
+
+    if(scause & (1UL << 63)) {
+        // 中断
+        printf("User interrupt: %s\n", interrupt_info[scause & 0xf]);
+        panic("User interrupt not implemented");
+    }
+    else {
+        // 异常
+        int exception_id = scause & 0xf;
+        
+        switch(exception_id) {
+            case 8: {
+                // system call
+                
+                p->tf->epc += 4;
+                
+                // 获取系统调用编号（来自 a7 寄存器）
+                uint64 syscall_num = p->tf->a7;
+                
+                // 现在已经修改了 epc，可以安全地开中断
+                // 因为后续如果发生中断，不会改变我们保存的 epc 值
+                intr_on();
+                
+                switch(syscall_num) {
+                    case SYS_print:
+                        printf("get a syscall from proc %d\n", p->pid);
+                        break;
+                    
+                    default:
+                        printf("Unknown syscall: %ld\n", syscall_num);
+                        break;
+                }
+                
+                // 关中断，准备返回用户态
+                intr_off();
+                break;
+            }
+            
+            // ========== 情况2：非法指令 ==========
+            case 2: {
+                printf("Illegal instruction at sepc=0x%lx\n", sepc);
+                printf("Instruction bytes: 0x%x\n", stval);
+                panic("User illegal instruction");
+                break;
+            }
+            
+            // ========== 情况3：加载页错误 ==========
+            case 13: {
+                printf("Load page fault at address 0x%lx\n", stval);
+                panic("User load page fault");
+                break;
+            }
+            
+            // ========== 情况4：存储页错误 ==========
+            case 15: {
+                printf("Store page fault at address 0x%lx\n", stval);
+                panic("User store page fault");
+                break;
+            }
+            
+            // ========== 情况5：其他异常 ==========
+            default: {
+                printf("User exception: cause=%d\n", exception_id);               
+                if(exception_id < 16 && exception_info[exception_id]) {
+                    printf("Exception: %s\n", exception_info[exception_id]);
+                }
+                panic("Unknown user exception");
+                break;
+            }
+        }
+    }
+    trap_user_return();
 }
 
 // 调用user_return()
 // 内核态返回用户态
 void trap_user_return()
 {
+    proc_t* p = myproc();
+    intr_off();
+    uint64 trampoline_uservec = TRAMPOLINE + (user_vector - trampoline);
+    w_stvec(trampoline_uservec);
 
+    p->tf->kernel_satp= r_satp();         // 保存内核的页表
+    p->tf->kernel_sp  = p->kstack + PGSIZE; // 保存内核栈顶
+    p->tf->kernel_trap= (uint64)trap_user_handler; // 保存内核trap处理函数入口
+    p->tf->kernel_hartid = r_tp();        // 保存内核hartid
+
+    uint64 sstatus = r_sstatus();
+    sstatus &= ~SSTATUS_SPP;              // 设置为用户态
+    sstatus |= SSTATUS_SPIE;              // 使能用户态中断
+    w_sstatus(sstatus);
+
+    w_sepc(p->tf->epc);
+    uint64 satp= MAKE_SATP(p->pgtbl);
+
+    uint64 user_return_func = TRAMPOLINE + ((uint64)user_return - (uint64)trampoline);
+    ((void (*)(uint64,uint64))user_return_func)(TRAPFRAME, satp);
+
+    panic("trap_user_return: should not reach here");
 }

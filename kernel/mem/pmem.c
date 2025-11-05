@@ -80,7 +80,7 @@ void pmem_free(uint64 page, bool in_kernel) {
     if (page < region->begin || page >= region->end) {
         panic("pmem_free: page address out of  region ");
     }
-    memset((void*)page, 1, PGSIZE);
+    //memset((void*)page, 1, PGSIZE);
 
     // 将页面地址转换为 page_node_t 指针
     page_node_t* node = (page_node_t*)page;
@@ -108,7 +108,7 @@ void* pmem_alloc(bool in_kernel) {
     spinlock_release(&region->lk);
 
     if (node) {
-        memset((void*)node, 5, PGSIZE);
+        memset((void*)node, 0, PGSIZE);
     }
 
     // 如果成功分配，返回页面地址；否则返回 NULL
