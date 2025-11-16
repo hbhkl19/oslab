@@ -8,6 +8,7 @@
 #include "riscv.h"
 #include "syscall/syscall.h"
 #include "memlayout.h"
+#include "dev/timer.h"
 
 // 堆伸缩
 // uint64 new_heap_top 新的堆顶 (如果是0代表查询, 返回旧的堆顶)
@@ -97,6 +98,9 @@ uint64 sys_munmap()
     return -1;
 }
 
+
+/*
+//---------------------------目前不需要copyin,copyout,copyinstr-------------------------
 // copyin 测试 (int 数组)
 // uint64 addr
 // uint32 len
@@ -145,4 +149,42 @@ uint64 sys_copyinstr()
     printf("get str from user: %s\n", s);
 
     return 0;
+}
+*/
+
+// 打印字符
+// uint64 addr
+uint64 sys_print()
+{
+
+}
+
+// 进程复制
+uint64 sys_fork()
+{
+
+}
+
+// 进程等待
+// uint64 addr  子进程退出时的exit_state需要放到这里 
+uint64 sys_wait()
+{
+
+}
+
+// 进程退出
+// int exit_state
+uint64 sys_exit()
+{
+
+}
+
+extern timer_t sys_timer;
+
+// 进程睡眠一段时间
+// uint32 second 睡眠时间
+// 成功返回0, 失败返回-1
+uint64 sys_sleep()
+{
+
 }

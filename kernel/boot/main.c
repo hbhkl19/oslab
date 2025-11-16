@@ -612,7 +612,7 @@ int main()
         // 启动第一个用户进程
         //
         // 这个函数将不会返回，因为它会切换上下文
-        proc_make_fisrt();
+        proc_make_first();
         
 
     } else {
