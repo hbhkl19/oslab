@@ -98,7 +98,7 @@ void proc_make_fisrt()
 
     proczero.heap_top = PGSIZE; // 代码段后面一页开始是堆
 
-    proczero.tf->epc = 0; // 用户代码入口地址
+    proczero.tf->epc = 0x34; // 用户代码入口地址
     proczero.tf->kernel_satp = r_satp(); // 内核页表
 
     proczero.tf->kernel_sp = proczero.kstack + PGSIZE; // 内核栈顶

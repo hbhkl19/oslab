@@ -5,6 +5,7 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "user/syscall_num.h"
+#include "syscall/syscall.h"
 
 // in trampoline.S
 extern char trampoline[];      // 内核和用户切换的代码
@@ -40,6 +41,7 @@ void trap_user_handler()
         // 中断
         printf("User interrupt: %s\n", interrupt_info[scause & 0xf]);
         panic("User interrupt not implemented");
+        //timer_interrupt_handler();
     }
     else {
         // 异常
@@ -50,24 +52,11 @@ void trap_user_handler()
                 // system call
                 
                 p->tf->epc += 4;
-                
-                // 获取系统调用编号（来自 a7 寄存器）
-                uint64 syscall_num = p->tf->a7;
-                
                 // 现在已经修改了 epc，可以安全地开中断
                 // 因为后续如果发生中断，不会改变我们保存的 epc 值
                 intr_on();
-                
-                switch(syscall_num) {
-                    case SYS_print:
-                        printf("get a syscall from proc %d\n", p->pid);
-                        break;
-                    
-                    default:
-                        printf("Unknown syscall: %ld\n", syscall_num);
-                        break;
-                }
-                
+
+                syscall();
                 // 关中断，准备返回用户态
                 intr_off();
                 break;

@@ -14,7 +14,7 @@ typedef struct mmap_region_node {
 #define N_MMAP 256
 
 // mmap_region_node_t 仓库(单向链表) + 指向链表头节点的指针 + 保护仓库的锁
-static mmap_region_node_t list_mmap_region_node[N_MMAP];
+//static mmap_region_node_t list_mmap_region_node[N_MMAP];
 static mmap_region_node_t* list_head;
 static spinlock_t list_lk;
 
@@ -27,10 +27,10 @@ void mmap_init()
 // 从仓库申请一个 mmap_region_t
 // 若申请失败则 panic
 // 注意: list_head 保留, 不会被申请出去
-mmap_region_t* mmap_region_alloc()
-{
-
-}
+// mmap_region_t* mmap_region_alloc()
+// {
+    
+// }
 
 // 向仓库归还一个 mmap_region_t
 void mmap_region_free(mmap_region_t* mmap)

@@ -19,7 +19,21 @@ static uint64 (*syscalls[])(void) = {
 // 系统调用
 void syscall()
 {
+    proc_t* p = myproc();
+    
+    // 从 a7 寄存器获取系统调用编号
+    uint64 syscall_num = p->tf->a7; 
 
+    // 检查编号是否有效
+    if (syscall_num > 0 && syscall_num < (sizeof(syscalls) / sizeof(syscalls[0])) && syscalls[syscall_num]) {
+        p->tf->a0= syscalls[syscall_num]();
+        
+    } else {
+        // 未知的系统调用
+        printf("pid %d: Unknown syscall: %ld\n", p->pid, syscall_num);
+        p->tf->a0 = -1; // 返回 -1 表示错误
+        panic("stop");
+    }
 }
 
 /*

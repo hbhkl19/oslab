@@ -5,4 +5,4 @@ init: initcode.c
 	$(LD) $(LDFLAGS) -N -e start -Ttext 0 -o initcode.out initcode.o
 	$(OBJCOPY) -S -O binary initcode.out initcode
 	xxd -i initcode > ../include/proc/initcode.h
-	rm -f initcode initcode.d initcode.o initcode.out
+	riscv64-unknown-elf-objdump -d initcode.out > initcode.asm
