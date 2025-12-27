@@ -583,7 +583,7 @@ int main()
         // CPU 0 (主核心) 负责初始化所有全局系统
         
         print_init(); // 初始化 printf
-        printf("\n=== RISC-V OS Kernel Lab 4 ===\n\n");
+        printf("\n=== RISC-V OS Kernel Lab 5 ===\n\n");
 
         printf("Initializing pmem (Physical Memory)...\n");
         pmem_init();    // 初始化物理内存分配器
@@ -604,16 +604,15 @@ int main()
         uart_init();    // 初始化 UART
         intr_on();     // 启用 S-mode 中断 (时钟中断和外部中断)
         printf("Initialization complete on CPU 0.\n\n");
+
+        proc_init();    // 初始化进程表
+        proc_make_first(); // 创建第一个用户进程
         
         // 唤醒其他核心
         __sync_synchronize();
         
         started = 1;
-        // 启动第一个用户进程
-        //
-        // 这个函数将不会返回，因为它会切换上下文
-        proc_make_first();
-        
+        proc_scheduler();
 
     } else {
         // 其他核心 (CPU 1...N)
@@ -631,12 +630,10 @@ int main()
         trap_kernel_inithart(); // 设置此 CPU 的 stvec 和 plic
         
         printf("CPU %d finished init.\n", cpuid);
+
+        intr_on();
+        proc_scheduler();
     }
 
-    // 启用 S-mode 中断 (时钟中断和外部中断)
-   // intr_on(); //
-
-    // 其他核心将在此处无限循环
-    // CPU 0 此时应该在 proczero 的用户态中
     while (1);
 }

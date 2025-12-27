@@ -100,8 +100,8 @@ void external_interrupt_handler()
 }
 
 
-static volatile int interrupt_count = 0;
-static volatile int last_print_count = 0;
+static volatile int interrupt_count __attribute__((unused)) = 0;
+static volatile int last_print_count __attribute__((unused)) = 0;
 
 // 时钟中断处理 (基于CLINT)
 void timer_interrupt_handler()
@@ -145,6 +145,9 @@ void trap_kernel_handler()
                 w_sip(r_sip() & ~2);
                 // 处理时钟中断
                 timer_interrupt_handler();
+                // 内核态不主动抢占，防止持锁路径被打断
+
+
                 break;
                 
             case 9:

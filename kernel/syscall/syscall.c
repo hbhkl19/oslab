@@ -8,12 +8,14 @@
 
 // 系统调用跳转
 static uint64 (*syscalls[])(void) = {
+    [SYS_print]        sys_print,
     [SYS_brk]           sys_brk,
     [SYS_mmap]          sys_mmap,
     [SYS_munmap]        sys_munmap,
-    [SYS_copyin]        sys_copyin,
-    [SYS_copyout]       sys_copyout,
-    [SYS_copyinstr]     sys_copyinstr,
+    [SYS_fork]          sys_fork,
+    [SYS_wait]          sys_wait,
+    [SYS_exit]          sys_exit,
+    [SYS_sleep]         sys_sleep,
 };
 
 // 系统调用
@@ -25,7 +27,7 @@ void syscall()
     uint64 syscall_num = p->tf->a7; 
 
     // 检查编号是否有效
-    if (syscall_num > 0 && syscall_num < (sizeof(syscalls) / sizeof(syscalls[0])) && syscalls[syscall_num]) {
+    if (syscall_num < (sizeof(syscalls) / sizeof(syscalls[0])) && syscalls[syscall_num]) {
         p->tf->a0= syscalls[syscall_num]();
         
     } else {

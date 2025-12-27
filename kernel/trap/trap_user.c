@@ -39,9 +39,22 @@ void trap_user_handler()
 
     if(scause & (1UL << 63)) {
         // 中断
-        printf("User interrupt: %s\n", interrupt_info[scause & 0xf]);
-        panic("User interrupt not implemented");
-        //timer_interrupt_handler();
+        int interrupt_id = scause & 0xf;
+        switch(interrupt_id) {
+            case 1: {
+                // S-mode 软件中断 (转发的时钟中断)
+                w_sip(r_sip() & ~2);
+                timer_interrupt_handler();
+                if(myproc() != 0 && myproc()->state == RUNNING) {
+                    proc_yield();
+                }
+                break;
+            }
+            default:
+                printf("User interrupt: %s\n", interrupt_info[interrupt_id]);
+                panic("User interrupt not implemented");
+        }
+
     }
     else {
         // 异常
@@ -103,6 +116,9 @@ void trap_user_handler()
 void trap_user_return()
 {
     proc_t* p = myproc();
+    // 调度器切入时持有进程锁，进入用户态前释放
+    if(spinlock_holding(&p->lk))
+        spinlock_release(&p->lk);
     intr_off();
     uint64 trampoline_uservec = TRAMPOLINE + (user_vector - trampoline);
     w_stvec(trampoline_uservec);

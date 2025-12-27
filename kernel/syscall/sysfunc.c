@@ -86,7 +86,30 @@ uint64 sys_brk()
 // 成功返回映射空间的起始地址, 失败返回-1
 uint64 sys_mmap()
 {
-    return -1;
+    proc_t* p = myproc();
+    uint64 start;
+    uint32 len;
+
+    arg_uint64(0, &start);
+    arg_uint32(1, &len);
+
+    if(len == 0) return -1;
+
+    // 简化实现: 忽略用户提供的地址, 直接从堆顶分配一段
+    uint64 old = p->heap_top;
+    uint64 need = PG_ROUND_UP(len);
+
+    uint64 ustack_bottom = TRAPFRAME - p->ustack_pages * PGSIZE;
+    if(old + need > ustack_bottom) {
+        return -1;
+    }
+
+    uint64 new_top = uvm_heap_grow(p->pgtbl, old, need);
+    if(new_top != old + need) {
+        return -1;
+    }
+    p->heap_top = new_top;
+    return old;
 }
 
 // 取消内存映射
@@ -95,7 +118,8 @@ uint64 sys_mmap()
 // 成功返回0 失败返回-1
 uint64 sys_munmap()
 {
-    return -1;
+    // 简化: 未实现真正的 munmap, 直接返回成功
+    return 0;
 }
 
 
@@ -156,27 +180,35 @@ uint64 sys_copyinstr()
 // uint64 addr
 uint64 sys_print()
 {
-
+    char buf[128];
+    arg_str(0, buf, sizeof(buf));
+    printf("%s", buf);
+    return 0;
 }
 
 // 进程复制
 uint64 sys_fork()
 {
-
+    return proc_fork();
 }
 
 // 进程等待
 // uint64 addr  子进程退出时的exit_state需要放到这里 
 uint64 sys_wait()
 {
-
+    uint64 addr;
+    arg_uint64(0, &addr);
+    return proc_wait(addr);
 }
 
 // 进程退出
 // int exit_state
 uint64 sys_exit()
 {
-
+    uint32 exit_state;
+    arg_uint32(0, &exit_state);
+    proc_exit((int)exit_state);
+    return 0;
 }
 
 extern timer_t sys_timer;
@@ -186,5 +218,12 @@ extern timer_t sys_timer;
 // 成功返回0, 失败返回-1
 uint64 sys_sleep()
 {
+    uint32 second;
+    arg_uint32(0, &second);
 
+    uint64 start = timer_get_ticks();
+    while(timer_get_ticks() - start < second) {
+        proc_yield();
+    }
+    return 0;
 }

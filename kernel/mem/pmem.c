@@ -75,9 +75,12 @@ void pmem_free(uint64 page, bool in_kernel) {
     alloc_region_t* region = in_kernel ? &kern_region : &user_region;
 
     if ((page % PGSIZE) != 0) {
+        printf("pmem_free: not aligned addr=%p in_kernel=%d\n", page, in_kernel);
         panic("pmem_free: page address not aligned");
     }
     if (page < region->begin || page >= region->end) {
+        printf("pmem_free: out of region addr=%p in_kernel=%d begin=%p end=%p\n",
+               page, in_kernel, region->begin, region->end);
         panic("pmem_free: page address out of  region ");
     }
     //memset((void*)page, 1, PGSIZE);

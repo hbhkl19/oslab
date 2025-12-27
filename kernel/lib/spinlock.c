@@ -3,6 +3,29 @@
 #include "proc/proc.h"
 #include "proc/cpu.h"
 #include "riscv.h"
+#include "dev/uart.h"
+
+static void uart_puts(const char* s)
+{
+    while(*s) uart_putc_sync(*s++);
+}
+
+static void uart_print_uint(uint64 x)
+{
+    char buf[32];
+    int i = 0;
+    if(x == 0) {
+        uart_putc_sync('0');
+        return;
+    }
+    while(x && i < (int)sizeof(buf)) {
+        buf[i++] = '0' + (x % 10);
+        x /= 10;
+    }
+    while(i > 0) {
+        uart_putc_sync(buf[--i]);
+    }
+}
 
 // 带层数叠加的关中断--当前允许中断
 void push_off(void)
@@ -48,33 +71,26 @@ void spinlock_init(spinlock_t *lk, char *name)
   lk->cpuid=-1;
 }
 
-// spinlock.c
-
-
-static int strcmp_simple(const char *s1, const char *s2) {
-    while (*s1 && (*s1 == *s2)) {
-        s1++;
-        s2++;
-    }
-    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
-}
-
-
 // 获取自旋锁
 void spinlock_acquire(spinlock_t *lk)
 {    
   push_off(); // 关中断
   if(spinlock_holding(lk)) {
-    // === 调试代码开始 ===
-    // 通过比较锁的名称，让 panic 信息更具体
-    if (strcmp_simple(lk->name, "pr") == 0) {
-        panic("acquire_print_lock"); // panic 来自 printf
-    } else if (strcmp_simple(lk->name, "sum_lock") == 0) {
-        panic("acquire_sum_lock"); // panic 来自 for 循环
-    } else {
-        panic("acquire_unknown_lock");
-    }
-    // === 调试代码结束 ===
+    // 重入获取同一把锁，直接报出锁名便于定位（用uart避免递归加锁）
+    uart_puts("LOCK ");
+    uart_puts(lk->name ? lk->name : "(null)");
+    uart_puts(" cpu ");
+    uart_print_uint(mycpuid());
+    uart_puts(" holder ");
+    uart_print_uint(lk->cpuid);
+    uart_puts(" pid ");
+    proc_t* p = myproc();
+    if(p)
+        uart_print_uint(p->pid);
+    else
+        uart_puts("none");
+    uart_putc_sync('\n');
+    panic("acquire_lock_twice");
   }
 
   // 自旋等待锁
