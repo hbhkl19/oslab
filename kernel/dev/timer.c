@@ -62,8 +62,7 @@ void timer_update()
     // 更新ticks
     sys_timer.ticks++;
     
-    // 可选：唤醒等待的进程
-    // wakeup(&sys_timer.ticks);
+    proc_wakeup(&sys_timer.ticks);
     
     // 释放锁
     spinlock_release(&sys_timer.lk);
