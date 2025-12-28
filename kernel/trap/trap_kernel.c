@@ -2,10 +2,12 @@
 #include "dev/timer.h"
 #include "dev/uart.h"
 #include "dev/plic.h"
+#include "dev/vio.h"
 #include "trap/trap.h"
 #include "proc/proc.h"
 #include "proc/cpu.h"
 #include "memlayout.h"
+#include "mem/vmem.h"
 #include "riscv.h"
 
 // 中断信息
@@ -83,12 +85,10 @@ void external_interrupt_handler()
             // 处理UART中断
             uart_intr();
             break;
-        /*    
         case VIRTIO_IRQ:
             // 处理VIRTIO磁盘中断
-            // virtio_disk_intr();
+            virtio_disk_intr();
             break;
-        */    
         default:
             // 未知的外设中断
             printf("Unknown external interrupt: irq=%d\n", irq);
@@ -166,9 +166,25 @@ void trap_kernel_handler()
     else {
         // 最高位为0，表示是异常
         int exception_id = scause & 0xf;
-        
-        printf("Exception in kernel: %s\n", exception_info[exception_id]);
-        printf("sepc=%p stval=%p\n", sepc, stval);
+        printf("Exception in kernel: %s (scause=%p)\n", exception_info[exception_id], scause);
+        printf("  cpu=%d sepc=%p stval=%p sstatus=%p satp=%p\n", mycpuid(), sepc, stval, sstatus, r_satp());
+
+        // 针对页错误打印一些额外信息(设备地址/页表条目)
+        if(exception_id == 13 || exception_id == 15) {
+            const char* region = "unknown";
+            if(stval >= UART_BASE && stval < UART_BASE + PGSIZE) region = "uart";
+            else if(stval >= PLIC_BASE && stval < PLIC_BASE + 0x400000) region = "plic";
+            else if(stval >= VIRTIO_BASE && stval < VIRTIO_BASE + PGSIZE) region = "virtio";
+
+            printf("  page fault va=%p region=%s\n", stval, region);
+            pgtbl_t kpgtbl = kvm_get_pgtbl();
+            pte_t* pte = vm_getpte(kpgtbl, stval, false);
+            if(pte && (*pte & PTE_V)) {
+                printf("  pte: %p (flags=%p pa=%p)\n", *pte, PTE_FLAGS(*pte), PTE_TO_PA(*pte));
+            } else {
+                printf("  pte: not present\n");
+            }
+        }
         
         // 异常处理
         switch(exception_id) {

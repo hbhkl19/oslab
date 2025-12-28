@@ -1,6 +1,7 @@
 #include "lib/lock.h"
 #include "lib/print.h"
 #include "dev/timer.h"
+#include "proc/proc.h"
 #include "memlayout.h"
 #include "riscv.h"
 

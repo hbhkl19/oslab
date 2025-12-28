@@ -568,6 +568,9 @@ int main()
 #include "dev/timer.h"
 #include "dev/uart.h"
 #include "dev/plic.h"
+#include "dev/vio.h"
+#include "fs/fs.h"
+#include "fs/file.h"
 #include "proc/proc.h"
 
 // 标志，用于通知其他核心 CPU 0 已经完成了主要初始化
@@ -583,7 +586,7 @@ int main()
         // CPU 0 (主核心) 负责初始化所有全局系统
         
         print_init(); // 初始化 printf
-        printf("\n=== RISC-V OS Kernel Lab 5 ===\n\n");
+        printf("\n=== RISC-V OS Kernel Lab 6 ===\n\n");
 
         printf("Initializing pmem (Physical Memory)...\n");
         pmem_init();    // 初始化物理内存分配器
@@ -602,7 +605,14 @@ int main()
         
         printf("Initializing uart (Serial Device)...\n");
         uart_init();    // 初始化 UART
-        intr_on();     // 启用 S-mode 中断 (时钟中断和外部中断)
+        printf("Initializing virtio_disk (Disk Device)...\n");
+        virtio_disk_init(); // 初始化磁盘
+        printf("Enabling interrupts before FS init...\n");
+        intr_on();     // 需要中断支持virtio完成磁盘IO
+        printf("Initializing file system\n");
+        fs_init();      // 初始化文件系统
+        printf("Initializing file table\n");
+        file_init();
         printf("Initialization complete on CPU 0.\n\n");
 
         proc_init();    // 初始化进程表

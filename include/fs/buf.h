@@ -15,6 +15,8 @@ typedef struct buf {
     
     uint32 buf_ref; // 还有多少处引用没有释放 
     bool disk;      // 在磁盘驱动中使用
+    bool valid;     // 数据是否有效
+    bool dirty;     // 是否需要写回磁盘
 
 } buf_t;
 

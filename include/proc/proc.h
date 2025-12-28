@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "lib/lock.h"
+#include "fs/file.h"
 
 // mmap_region定义
 typedef struct mmap_region mmap_region_t;
@@ -113,6 +114,9 @@ typedef struct proc {
 
     uint64 kstack;           // 内核栈的虚拟地址
     context_t ctx;           // 内核态进程上下文
+
+    file_t* filelist[FILE_PER_PROC]; // 打开的文件表
+    inode_t* cwd;            // 当前工作目录
 } proc_t;
 
 

@@ -28,4 +28,12 @@ uint64 sys_chdir();
 uint64 sys_link();
 uint64 sys_unlink();
 
+// 测试/调试相关
+uint64 sys_alloc_block();
+uint64 sys_free_block();
+uint64 sys_read_block();
+uint64 sys_write_block();
+uint64 sys_release_block();
+uint64 sys_show_buf();
+
 #endif

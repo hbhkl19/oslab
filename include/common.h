@@ -23,4 +23,11 @@ typedef enum {false = 0, true = 1} bool;
 #define NCPU 2
 #define NPROC 10
 
+// 文件系统使用的块大小
+#define BLOCK_SIZE 1024
+
+// 简单的对齐宏
+#define ALIGN_DOWN(x, a) ((x) & ~((a) - 1))
+#define ALIGN_UP(x, a)   (((x) + (a) - 1) & ~((a) - 1))
+
 #endif

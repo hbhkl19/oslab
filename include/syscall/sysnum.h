@@ -23,7 +23,14 @@
 #define SYS_link         18
 #define SYS_unlink       19
 
+#define SYS_print        20
+#define SYS_alloc_block  21
+#define SYS_free_block   22
+#define SYS_read_block   23
+#define SYS_write_block  24
+#define SYS_release_block 25
+#define SYS_show_buf     26
 
-#define SYS_MAX          19
+#define SYS_MAX          26
 
 #endif

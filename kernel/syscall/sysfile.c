@@ -3,7 +3,7 @@
 #include "fs/inode.h"
 #include "fs/dir.h"
 #include "fs/file.h"
-#include "lib/str.h"
+#include "lib/string.h"
 #include "lib/print.h"
 #include "syscall/syscall.h"
 #include "syscall/sysfunc.h"

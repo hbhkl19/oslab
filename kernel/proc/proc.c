@@ -4,6 +4,8 @@
 #include "proc/cpu.h"
 #include "proc/initcode.h"
 #include "memlayout.h"
+#include "fs/file.h"
+#include "fs/inode.h"
 #include "proc/proc.h"
 #include "lib/string.h"
 #include "riscv.h"
@@ -67,6 +69,9 @@ proc_t* proc_alloc()
             p->sleep_space = NULL;
             p->heap_top = PGSIZE;
             p->ustack_pages = 1;
+            p->cwd = NULL;
+            for(int j = 0; j < FILE_PER_PROC; j++)
+                p->filelist[j] = NULL;
 
             // 分配内核栈
             p->kstack = (uint64)pmem_alloc(true);
@@ -134,6 +139,17 @@ void proc_free(proc_t* p)
         p->kstack = 0;
     }
 
+    for(int i = 0; i < FILE_PER_PROC; i++) {
+        if(p->filelist[i]) {
+            file_close(p->filelist[i]);
+            p->filelist[i] = NULL;
+        }
+    }
+    if(p->cwd) {
+        inode_free(p->cwd);
+        p->cwd = NULL;
+    }
+
     p->pid = -1;
     p->parent = NULL;
     p->exit_state = 0;
@@ -158,6 +174,9 @@ void proc_init()
         procs[i].pgtbl = NULL;
         procs[i].tf = NULL;
         procs[i].kstack = 0;
+        procs[i].cwd = NULL;
+        for(int j = 0; j < FILE_PER_PROC; j++)
+            procs[i].filelist[j] = NULL;
     }
     // 预留 proczero 为 procs[0]
     proczero = &procs[0];
@@ -188,6 +207,12 @@ int proc_fork()
 
     child->parent = parent;
     child->state = RUNNABLE;
+    for(int i = 0; i < FILE_PER_PROC; i++) {
+        if(parent->filelist[i])
+            child->filelist[i] = file_dup(parent->filelist[i]);
+    }
+    if(parent->cwd)
+        child->cwd = inode_dup(parent->cwd);
 
     int pid = child->pid;
 #ifdef PROC_DEBUG
@@ -282,6 +307,18 @@ void proc_exit(int exit_state)
 
     spinlock_acquire(&p->lk);
     p->exit_state = exit_state;
+
+    // 关闭文件和cwd
+    for(int i = 0; i < FILE_PER_PROC; i++) {
+        if(p->filelist[i]) {
+            file_close(p->filelist[i]);
+            p->filelist[i] = NULL;
+        }
+    }
+    if(p->cwd) {
+        inode_free(p->cwd);
+        p->cwd = NULL;
+    }
 
     // 处理孤儿进程
     proc_reparent(p);
@@ -466,7 +503,29 @@ void proc_make_first()
 
     p->heap_top = PGSIZE; // 代码段后面一页开始是堆
 
-    p->tf->epc = 0x60; // 用户代码入口地址
+    // 设置当前工作目录为根目录
+    p->cwd = inode_alloc(INODE_ROOT);
+
+    // 简单的标准输入输出: 绑定到控制台设备
+    file_t* f_stdout = file_alloc();
+    f_stdout->type = FD_DEVICE;
+    f_stdout->readable = true;
+    f_stdout->writable = true;
+    f_stdout->major = DEV_CONSOLE;
+    f_stdout->offset = 0;
+    f_stdout->ip = NULL;
+    p->filelist[0] = f_stdout;
+
+    file_t* f_stdin = file_alloc();
+    f_stdin->type = FD_DEVICE;
+    f_stdin->readable = true;
+    f_stdin->writable = false;
+    f_stdin->major = DEV_CONSOLE;
+    f_stdin->offset = 0;
+    f_stdin->ip = NULL;
+    p->filelist[1] = f_stdin;
+
+    p->tf->epc = 0xe0; // 用户代码入口地址
     p->tf->kernel_satp = r_satp(); // 内核页表
 
     p->tf->kernel_sp = p->kstack + PGSIZE; // 内核栈顶

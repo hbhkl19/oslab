@@ -2,10 +2,11 @@
 #include "dev/vio.h"
 #include "lib/lock.h"
 #include "lib/print.h"
-#include "lib/str.h"
+#include "lib/string.h"
 
 #define N_BLOCK_BUF 64
 #define BLOCK_NUM_UNUSED 0xFFFFFFFF
+#define container_of(ptr, type, member) ((type *)((char *)(ptr) - (uint64)&(((type *)0)->member)))
 
 // 将buf包装成双向循环链表的node
 typedef struct buf_node {
@@ -45,7 +46,20 @@ static void insert_head(buf_node_t* buf_node, bool head_next)
 // 初始化
 void buf_init()
 {
+    spinlock_init(&lk_buf_cache, "buf_cache");
+    head_buf.next = head_buf.prev = &head_buf;
 
+    for(int i = 0; i < N_BLOCK_BUF; i++) {
+        buf_node_t* node = &buf_cache[i];
+        memset(&node->buf, 0, sizeof(buf_t));
+        node->buf.block_num = BLOCK_NUM_UNUSED;
+        node->buf.buf_ref = 0;
+        node->buf.disk = false;
+        node->buf.valid = false;
+        node->buf.dirty = false;
+        sleeplock_init(&node->buf.slk, "buffer");
+        insert_head(node, true);
+    }
 }
 
 /*
@@ -56,35 +70,105 @@ void buf_init()
 */
 buf_t* buf_read(uint32 block_num)
 {
+    buf_node_t* node;
 
+    spinlock_acquire(&lk_buf_cache);
+
+    // 缓存命中
+    for(node = head_buf.next; node != &head_buf; node = node->next) {
+        if(node->buf.block_num == block_num) {
+            node->buf.buf_ref++;
+            insert_head(node, true);
+            spinlock_release(&lk_buf_cache);
+            sleeplock_acquire(&node->buf.slk);
+            if(node->buf.valid == false) {
+                virtio_disk_rw(&node->buf, false);
+                node->buf.valid = true;
+            }
+            return &node->buf;
+        }
+    }
+
+    // 选择一个未被使用的buf(从尾部开始, 实现LRU)
+    for(node = head_buf.prev; node != &head_buf; node = node->prev) {
+        if(node->buf.buf_ref == 0) {
+            uint32 old_block = node->buf.block_num;
+            bool need_flush = node->buf.dirty && node->buf.valid && old_block != BLOCK_NUM_UNUSED;
+
+            node->buf.buf_ref = 1;
+            insert_head(node, true);
+            spinlock_release(&lk_buf_cache);
+
+            sleeplock_acquire(&node->buf.slk);
+            if(need_flush) {
+                virtio_disk_rw(&node->buf, true);
+                node->buf.dirty = false;
+            }
+
+            node->buf.block_num = block_num;
+            node->buf.valid = false;
+            node->buf.dirty = false;
+            node->buf.disk = false;
+
+            virtio_disk_rw(&node->buf, false);
+            node->buf.valid = true;
+            return &node->buf;
+        }
+    }
+
+    spinlock_release(&lk_buf_cache);
+    panic("buf_read: no free buffer");
+    return NULL;
 }
 
 // 写函数 (强制磁盘和内存保持一致)
 void buf_write(buf_t* buf)
 {
-
+    assert(sleeplock_holding(&buf->slk), "buf_write: lock");
+    virtio_disk_rw(buf, true);
+    buf->dirty = false;
+    buf->valid = true;
 }
 
 // buf 释放
 void buf_release(buf_t* buf)
 {
+    assert(sleeplock_holding(&buf->slk), "buf_release: lock");
 
+    if(buf->dirty) {
+        buf_write(buf);
+    }
+
+    sleeplock_release(&buf->slk);
+
+    spinlock_acquire(&lk_buf_cache);
+    buf_node_t* node = container_of(buf, buf_node_t, buf);
+    if(buf->buf_ref == 0)
+        panic("buf_release: ref");
+    buf->buf_ref--;
+    if(buf->buf_ref == 0)
+        insert_head(node, true);
+    spinlock_release(&lk_buf_cache);
 }
 
 // 输出buf_cache的情况
 void buf_print()
 {
-    printf("\nbuf_cache:\n");
-    buf_node_t* buf = head_buf.next;
+    printf("\nbuf_cache (active entries):\n");
     spinlock_acquire(&lk_buf_cache);
+    buf_node_t* buf = head_buf.next;
+    int total = 0;
     while(buf != &head_buf)
     {
         buf_t* b = &buf->buf;
-        printf("buf %d: ref = %d, block_num = %d\n", (int)(buf-buf_cache), b->buf_ref, b->block_num);
-        for(int i = 0; i < 8; i++)
-            printf("%d ",b->data[i]);
-        printf("\n");
+        if(b->block_num != BLOCK_NUM_UNUSED) {
+            printf("buf %d: ref=%d block=%d data[0..3]=%d %d %d %d\n",
+                   (int)(buf - buf_cache), b->buf_ref, b->block_num,
+                   b->data[0], b->data[1], b->data[2], b->data[3]);
+            total++;
+        }
         buf = buf->next;
     }
+    printf("active buf count = %d\n", total);
     spinlock_release(&lk_buf_cache);
 }

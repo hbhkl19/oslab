@@ -58,6 +58,8 @@ void pop_off(void)
 // 中断应当是关闭的
 bool spinlock_holding(spinlock_t *lk)
 {
+  if(lk == NULL)
+    return false;
   int r;
   r=(lk->locked && lk->cpuid==mycpuid());
   return r;
@@ -74,6 +76,11 @@ void spinlock_init(spinlock_t *lk, char *name)
 // 获取自旋锁
 void spinlock_acquire(spinlock_t *lk)
 {    
+  if(lk == NULL) {
+    uint64 ra = (uint64)__builtin_return_address(0);
+    printf("spinlock_acquire: lk is NULL (ra=%p)\n", ra);
+    panic("spinlock_acquire: lk is NULL");
+  }
   push_off(); // 关中断
   if(spinlock_holding(lk)) {
     // 重入获取同一把锁，直接报出锁名便于定位（用uart避免递归加锁）
@@ -116,4 +123,44 @@ void spinlock_release(spinlock_t *lk)
   __sync_lock_release(&lk->locked);
 
   pop_off(); // 开中断
+}
+
+/*-------------------------- 睡眠锁 ----------------------------*/
+
+// 初始化睡眠锁
+void sleeplock_init(sleeplock_t* lk, char* name)
+{
+    spinlock_init(&lk->lk, "sleeplock");
+    lk->name = name;
+    lk->locked = 0;
+    lk->pid = 0;
+}
+
+// 获取睡眠锁(等待时会睡眠)
+void sleeplock_acquire(sleeplock_t* lk)
+{
+    spinlock_acquire(&lk->lk);
+    while(lk->locked) {
+        proc_sleep(lk, &lk->lk);
+    }
+    lk->locked = 1;
+    proc_t* p = myproc();
+    lk->pid = p ? p->pid : -1;
+    spinlock_release(&lk->lk);
+}
+
+// 释放睡眠锁
+void sleeplock_release(sleeplock_t* lk)
+{
+    spinlock_acquire(&lk->lk);
+    lk->locked = 0;
+    lk->pid = 0;
+    proc_wakeup(lk);
+    spinlock_release(&lk->lk);
+}
+
+// 是否持有睡眠锁
+bool sleeplock_holding(sleeplock_t* lk)
+{
+    return lk->locked && lk->pid == (myproc() ? myproc()->pid : -1);
 }

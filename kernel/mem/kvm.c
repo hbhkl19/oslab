@@ -154,6 +154,8 @@ void kvm_init() {
     // 将 UART 寄存器的物理地址映射到等值的虚拟地址
     vm_mappages(kernel_pgtbl, UART_BASE, UART_BASE, PGSIZE, PTE_R | PTE_W);
     
+    // 2.5 映射 VirtIO MMIO 寄存器
+    vm_mappages(kernel_pgtbl, VIRTIO_BASE, VIRTIO_BASE, PGSIZE, PTE_R | PTE_W);
 
     // 3. 映射硬件设备: PLIC
     // 将 PLIC 寄存器的物理地址区域映射到等值的虚拟地址
@@ -185,6 +187,12 @@ void kvm_inithart() {
     // 2. 刷新 TLB (Translation Lookaside Buffer)
     // 确保旧的/无效的地址翻译被清除
     sfence_vma();
+}
+
+// debug helper: 获取当前内核页表指针
+pgtbl_t kvm_get_pgtbl()
+{
+    return kernel_pgtbl;
 }
 
 

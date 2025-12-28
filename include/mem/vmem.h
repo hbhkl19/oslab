@@ -77,6 +77,7 @@ void   vm_unmappages(pgtbl_t pgtbl, uint64 va, uint64 len, bool freeit);
 
 void   kvm_init();
 void   kvm_inithart();
+pgtbl_t kvm_get_pgtbl(); // debug use
 
 /*------------------------ in uvm.c -----------------------*/
 

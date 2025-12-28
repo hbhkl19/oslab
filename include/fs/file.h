@@ -11,6 +11,9 @@
 #define FD_DEVICE   3
 #define FD_PIPE     4
 
+// 每个进程最多打开的文件数量
+#define FILE_PER_PROC 16
+
 // 文件打开方式 (readable writable)
 
 #define MODE_CREATE    0x1 // 文件不存在则创建

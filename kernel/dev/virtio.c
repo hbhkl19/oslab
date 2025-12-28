@@ -11,8 +11,9 @@
 #include "fs/buf.h"
 #include "lib/lock.h"
 #include "lib/print.h"
-#include "lib/str.h"
+#include "lib/string.h"
 #include "mem/vmem.h"
+#include "proc/cpu.h"
 #include "proc/proc.h"
 #include "riscv.h"
 #include "memlayout.h"
@@ -47,6 +48,8 @@ static struct disk
     struct spinlock vdisk_lock;
 
 } __attribute__((aligned(PGSIZE))) disk;
+
+void virtio_disk_intr(void);
 
 void virtio_disk_init()
 {
@@ -177,6 +180,8 @@ void virtio_disk_rw(buf_t *b, bool write)
     uint64 sector = b->block_num * (BLOCK_SIZE / 512);
 
     spinlock_acquire(&disk.vdisk_lock);
+    // debug trace
+    // printf("[virtio] rw block=%d write=%d\n", b->block_num, write);
 
     // the spec says that legacy block operations use three
     // descriptors: one for type/reserved/sector, one for
@@ -184,13 +189,17 @@ void virtio_disk_rw(buf_t *b, bool write)
 
     // allocate the three descriptors.
     int idx[3];
+    bool has_proc = (myproc() != NULL);
     while (1)
     {
         if (alloc3_desc(idx) == 0)
         {
             break;
         }
-        proc_sleep(&disk.free[0], &disk.vdisk_lock);
+        if(has_proc)
+            proc_sleep(&disk.free[0], &disk.vdisk_lock);
+        else
+            ; // busy wait if no process yet
     }
 
     // format the three descriptors.
@@ -215,7 +224,9 @@ void virtio_disk_rw(buf_t *b, bool write)
     uint64 addr = ALIGN_DOWN((uint64)&buf0, PGSIZE);
     uint64 off  = ((uint64)&buf0) % PGSIZE;
 
-    pte_t* pte = vm_getpte(NULL, addr, false);
+    pgtbl_t kpgtbl = kvm_get_pgtbl();
+    pte_t* pte = vm_getpte(kpgtbl, addr, false);
+    assert(pte && (*pte & PTE_V), "virtio_disk_rw: pte for buf0");
     disk.desc[idx[0]].addr = (uint64)PTE_TO_PA(*pte) + off;
     disk.desc[idx[0]].len = sizeof(buf0);
     disk.desc[idx[0]].flags = VRING_DESC_F_NEXT;
@@ -253,7 +264,16 @@ void virtio_disk_rw(buf_t *b, bool write)
     // Wait for virtio_disk_intr() to say request has finished.
     while (b->disk == true)
     {
-        proc_sleep(b, &disk.vdisk_lock);
+        if(has_proc) {
+            proc_sleep(b, &disk.vdisk_lock);
+        } else {
+            // busy wait in early boot; also主动轮询 used 队列防止卡死
+            if((disk.used_idx % NUM) != (disk.used->id % NUM)) {
+                spinlock_release(&disk.vdisk_lock);
+                virtio_disk_intr();
+                spinlock_acquire(&disk.vdisk_lock);
+            }
+        }
     }
 
     disk.info[idx[0]].b = 0;

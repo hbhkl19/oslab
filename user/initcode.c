@@ -2,7 +2,7 @@
 
 int main()
 {
-    char path[] = "./_test";
+    char path[] = "./test";
     char* argv[] = {"hello", "world", 0};
 
     int pid = syscall(SYS_fork);
