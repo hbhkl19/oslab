@@ -30,6 +30,7 @@ static void sb_print()
 // 文件系统初始化
 void fs_init()
 {
+    //test1
     buf_init();
 
     buf_t* buf; 
@@ -41,4 +42,155 @@ void fs_init()
     sb_print();
 
     inode_init();
+
+    /*=======================test2 路径测试===========================
+    // in fs_init()
+
+    // inode初始化
+    inode_init();
+
+    // 创建inode
+    inode_t* ip = inode_alloc(INODE_ROOT);
+    inode_t* ip_1 = inode_create(FT_DIR, 0, 0);
+    inode_t* ip_2 = inode_create(FT_DIR, 0, 0);
+    inode_t* ip_3 = inode_create(FT_FILE, 0, 0);
+
+    // 上锁
+    inode_lock(ip);
+    inode_lock(ip_1);
+    inode_lock(ip_2);
+    inode_lock(ip_3);
+
+    // 创建目录
+    dir_add_entry(ip, ip_1->inode_num, "user");
+    dir_add_entry(ip_1, ip_2->inode_num, "work");
+    dir_add_entry(ip_2, ip_3->inode_num, "hello.txt");
+    
+    // 填写文件
+    inode_write_data(ip_3, 0, 11, "hello world", false);
+
+    // 解锁
+    inode_unlock(ip_3);
+    inode_unlock(ip_2);
+    inode_unlock(ip_1);
+    inode_unlock(ip);
+
+    // 路径查找
+    char* path = "/user/work/hello.txt";
+    char name[DIR_NAME_LEN];
+    inode_t* tmp_1 = path_to_pinode(path, name);
+    inode_t* tmp_2 = path_to_inode(path);
+
+    assert(tmp_1 != NULL, "tmp1 = NULL");
+    assert(tmp_2 != NULL, "tmp2 = NULL");
+    printf("\nname = %s\n", name);
+
+    // 输出 tmp_1 的信息
+    inode_lock(tmp_1);
+    inode_print(tmp_1);
+    inode_unlock_free(tmp_1);
+
+    // 输出 tmp_2 的信息
+    inode_lock(tmp_2);
+    inode_print(tmp_2);
+    char str[12];
+    str[11] = 0;
+    inode_read_data(tmp_2, 0, tmp_2->size, str, false);
+    printf("read: %s\n", str);
+    inode_unlock_free(tmp_2);
+
+    printf("over");
+    while (1); 
+    */
+
+    /*=========================test3 目录测试=========================
+        // in fs_init()
+
+    // inode初始化
+    inode_init();
+
+    // 获取根目录
+    inode_t* ip = inode_alloc(INODE_ROOT);    
+    inode_lock(ip);
+
+    // 第一次查看
+    dir_print(ip);
+    
+    // add entry
+    dir_add_entry(ip, 1, "a.txt");
+    dir_add_entry(ip, 2, "b.txt");
+    dir_add_entry(ip, 3, "c.txt");
+    
+    // 第二次查看
+    dir_print(ip);
+
+    // 第一次检查
+    assert(dir_search_entry(ip, "b.txt") == 2, "error-1");
+
+    // delete entry
+    dir_delete_entry(ip, "a.txt");
+   
+    // 第三次查看
+    dir_print(ip);
+    
+    // add entry
+    dir_add_entry(ip, 1, "d.txt");    
+    
+    // 第四次查看
+    dir_print(ip);
+    
+    // 第二次检查
+    assert(dir_add_entry(ip, 4, "d.txt") == BLOCK_SIZE, "error-2");
+    
+    inode_unlock(ip);
+
+    printf("over");
+
+    while (1); 
+    */
+
+    /*=======================test4 inode读写测试======================
+    // in fs.c fs_init()
+    // 在函数外声明两个个大小为 2*BLOCK_SIZE 的数组 str 和 tmp
+    // blockcmp 函数负责比较两个大小为 2*BLOCK_SIZE 的空间是否完全一样
+
+    // inode初始化
+    inode_init();
+    uint32 ret = 0;
+
+    for(int i = 0; i < BLOCK_SIZE * 2; i++)
+        str[i] = i;
+
+    // 创建新的inode
+    inode_t* nip = inode_create(FT_FILE, 0, 0);
+    inode_lock(nip);
+    
+    // 第一次查看
+    inode_print(nip);
+
+    // 第一次写入
+    ret = inode_write_data(nip, 0, BLOCK_SIZE / 2, str, false);
+    assert(ret == BLOCK_SIZE / 2, "inode_write_data: fail");
+
+    // 第二次写入
+    ret = inode_write_data(nip, BLOCK_SIZE / 2, BLOCK_SIZE + BLOCK_SIZE / 2, str + BLOCK_SIZE / 2, false);
+    assert(ret == BLOCK_SIZE +  BLOCK_SIZE / 2, "inode_write_data: fail");
+
+    // 一次读取
+    ret = inode_read_data(nip, 0, BLOCK_SIZE * 2, tmp, false);
+    assert(ret == BLOCK_SIZE * 2, "inode_read_data: fail");
+
+    // 第二次查看
+    inode_print(nip);
+    
+    inode_unlock_free(nip);
+
+    // 测试
+    if(blockcmp(tmp, str) == true)
+        printf("success");
+    else
+        printf("fail");
+
+    while (1); 
+    */
 }
