@@ -1,0 +1,232 @@
+ #include "lib/print.h"
+#include "dev/timer.h"
+#include "dev/uart.h"
+#include "dev/plic.h"
+#include "dev/sbi.h"
+#include "dev/vio.h"
+#include "trap/trap.h"
+#include "proc/proc.h"
+#include "proc/cpu.h"
+#include "memlayout.h"
+#include "mem/vmem.h"
+#include "riscv.h"
+
+// 定时器中断间隔 (约 10 ticks/秒，QEMU 默认时钟频率 10MHz)
+#define TIMER_INTERVAL (10000000 / 10)
+
+// 中断信息
+char* interrupt_info[16] = {
+    "U-mode software interrupt",      // 0
+    "S-mode software interrupt",      // 1
+    "reserved-1",                     // 2
+    "M-mode software interrupt",      // 3
+    "U-mode timer interrupt",         // 4
+    "S-mode timer interrupt",         // 5
+    "reserved-2",                     // 6
+    "M-mode timer interrupt",         // 7
+    "U-mode external interrupt",      // 8
+    "S-mode external interrupt",      // 9
+    "reserved-3",                     // 10
+    "M-mode external interrupt",      // 11
+    "reserved-4",                     // 12
+    "reserved-5",                     // 13
+    "reserved-6",                     // 14
+    "reserved-7",                     // 15
+};
+
+// 异常信息
+char* exception_info[16] = {
+    "Instruction address misaligned", // 0
+    "Instruction access fault",       // 1
+    "Illegal instruction",            // 2
+    "Breakpoint",                     // 3
+    "Load address misaligned",        // 4
+    "Load access fault",              // 5
+    "Store/AMO address misaligned",   // 6
+    "Store/AMO access fault",         // 7
+    "Environment call from U-mode",   // 8
+    "Environment call from S-mode",   // 9
+    "reserved-1",                     // 10
+    "Environment call from M-mode",   // 11
+    "Instruction page fault",         // 12
+    "Load page fault",                // 13
+    "reserved-2",                     // 14
+    "Store/AMO page fault",           // 15
+};
+
+// in trap.S
+// 内核中断处理流程
+extern void kernel_vector();
+
+// 初始化trap中全局共享的东西
+void trap_kernel_init()
+{
+    timer_create();
+    plic_init();
+}
+
+// 各个核心trap初始化
+void trap_kernel_inithart()
+{
+    // 设置内核态trap入口地址
+    w_stvec((uint64)kernel_vector);
+    plic_inithart();
+    
+    // 启用 SIE 寄存器中的中断位
+    // SEIE: Supervisor External Interrupt Enable (外设中断)
+    // STIE: Supervisor Timer Interrupt Enable (定时器中断)
+    // SSIE: Supervisor Software Interrupt Enable (软件中断)
+    w_sie(r_sie() | SIE_SEIE | SIE_STIE | SIE_SSIE);
+    
+    // 设置第一个定时器中断
+    sbi_set_timer(r_time() + TIMER_INTERVAL);
+}
+
+// 外设中断处理 (基于PLIC)
+void external_interrupt_handler()
+{
+    int irq = plic_claim();
+    
+    if(irq == 0) {
+        // irq为0表示没有待处理的中断(不应该发生)
+        //printf("Warning: spurious external interrupt\n");
+        return;
+    }
+
+    switch(irq) {
+        case UART_IRQ:
+            // 处理UART中断
+            uart_intr();
+            break;
+        case VIRTIO_IRQ:
+            // 处理VIRTIO磁盘中断
+            virtio_disk_intr();
+            break;
+        default:
+            // 未知的外设中断
+            printf("Unknown external interrupt: irq=%d\n", irq);
+            break;
+    }
+    
+    
+    plic_complete(irq);
+}
+
+
+static volatile int interrupt_count __attribute__((unused)) = 0;
+static volatile int last_print_count __attribute__((unused)) = 0;
+
+// 唤醒所有计时器到期的进程 (在时钟中断中调用)
+extern void wakeup_timer_sleepers(uint64 current_ticks);
+
+// 时钟中断处理 (基于SBI定时器)
+void timer_interrupt_handler()
+{
+    // 设置下一个定时器中断
+    sbi_set_timer(r_time() + TIMER_INTERVAL);
+    
+    // 只在CPU 0上更新系统时钟
+    if(mycpuid() == 0) {
+        timer_update();
+        // 唤醒计时器到期的进程
+        wakeup_timer_sleepers(timer_get_ticks());
+    }
+
+/*     //预留调度接口
+    if(myproc() != 0 && myproc()->state == RUNNING)
+            yield(); */
+}
+
+// 在kernel_vector()里面调用
+// 内核态trap处理的核心逻辑
+void trap_kernel_handler()
+{
+    uint64 sepc = r_sepc();          // 记录了发生异常时的pc值
+    uint64 sstatus = r_sstatus();    // 与特权模式和中断相关的状态信息
+    uint64 scause = r_scause();      // 引发trap的原因
+    uint64 stval = r_stval();        // 发生trap时保存的附加信息(不同trap不一样)
+
+    // 确认trap来自S-mode且此时trap处于关闭状态
+    assert(sstatus & SSTATUS_SPP, "trap_kernel_handler: not from s-mode");
+    assert(intr_get() == 0, "trap_kernel_handler: interreput enabled");
+
+    // 判断是中断还是异常
+    if(scause & (1UL << 63)) {
+        // 最高位为1，表示是中断
+        int interrupt_id = scause & 0xf;
+        
+        // 打印中断信息（调试用）
+        // printf("Interrupt: %s\n", interrupt_info[interrupt_id]);
+        
+        switch(interrupt_id) {
+            case 1:
+                // S-mode 软件中断（来自M-mode的时钟中断转发，旧方式）
+
+                // 清除软件中断标志
+                w_sip(r_sip() & ~2);
+                // 处理时钟中断
+                timer_interrupt_handler();
+                // 内核态不主动抢占，防止持锁路径被打断
+
+
+                break;
+            
+            case 5:
+                // S-mode 定时器中断（使用 SBI 定时器）
+                // 处理时钟中断（会设置下一个定时器）
+                timer_interrupt_handler();
+                break;
+                
+            case 9:
+                // S-mode 外设中断
+                external_interrupt_handler();
+                break;
+                
+            default:
+                // 未知中断
+                printf("Unknown interrupt: %s (id=%d)\n", 
+                       interrupt_info[interrupt_id], interrupt_id);
+                printf("sepc=%p stval=%p\n", sepc, stval);
+                break;
+        }
+    }
+    else {
+        // 最高位为0，表示是异常
+        int exception_id = scause & 0xf;
+        printf("Exception in kernel: %s (scause=%p)\n", exception_info[exception_id], scause);
+        printf("  cpu=%d sepc=%p stval=%p sstatus=%p satp=%p\n", mycpuid(), sepc, stval, sstatus, r_satp());
+
+        // 针对页错误打印一些额外信息(设备地址/页表条目)
+        if(exception_id == 13 || exception_id == 15) {
+            const char* region = "unknown";
+            if(stval >= UART_BASE && stval < UART_BASE + PGSIZE) region = "uart";
+            else if(stval >= PLIC_BASE && stval < PLIC_BASE + 0x400000) region = "plic";
+            else if(stval >= VIRTIO_BASE && stval < VIRTIO_BASE + PGSIZE) region = "virtio";
+
+            printf("  page fault va=%p region=%s\n", stval, region);
+            pgtbl_t kpgtbl = kvm_get_pgtbl();
+            pte_t* pte = vm_getpte(kpgtbl, stval, false);
+            if(pte && (*pte & PTE_V)) {
+                printf("  pte: %p (flags=%p pa=%p)\n", *pte, PTE_FLAGS(*pte), PTE_TO_PA(*pte));
+            } else {
+                printf("  pte: not present\n");
+            }
+        }
+        
+        // 异常处理
+        switch(exception_id) {
+            case 2:  // Illegal instruction
+                panic("Illegal instruction in kernel");
+                break;
+            case 12: // Instruction page fault
+            case 13: // Load page fault
+            case 15: // Store page fault
+                panic("Page fault in kernel");
+                break;
+            default:
+                panic("Unexpected exception in kernel");
+        }
+    }
+    w_sepc(sepc);
+    w_sstatus(sstatus);
+}

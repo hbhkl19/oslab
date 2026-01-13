@@ -1,0 +1,46 @@
+OUTPUT_ARCH( "riscv" )
+ENTRY( _entry )
+
+SECTIONS
+{
+  . = 0x80200000;
+
+  .text : {
+    *(.text .text.*)
+    . = ALIGN(0x1000);
+
+    _trampoline = .;
+    *(trampsec)
+    . = ALIGN(0x1000);
+    ASSERT(. - _trampoline == 0x1000, "error: trampoline larger than one page");
+
+    PROVIDE(etext = .);
+  }
+
+  .rodata : {
+    . = ALIGN(16);
+    *(.srodata .srodata.*) /* do not need to distinguish this from .rodata */
+    . = ALIGN(16);
+    *(.rodata .rodata.*)
+  }
+
+  .data : {
+    . = ALIGN(16);
+    PROVIDE(KERNEL_DATA = .);
+    *(.sdata .sdata.*) /* do not need to distinguish this from .data */
+    . = ALIGN(16);
+    *(.data .data.*)
+  }
+
+  .bss : {
+    . = ALIGN(16);
+    PROVIDE(__bss_start = .);  /* 添加这行 - BSS 起始地址 */
+    *(.sbss .sbss.*) /* do not need to distinguish this from .bss */
+    . = ALIGN(16);
+    *(.bss .bss.*)
+    PROVIDE(__bss_end = .);    /* 添加这行 - BSS 结束地址 */
+  }
+
+  PROVIDE(end = .);
+  PROVIDE(ALLOC_BEGIN = .);
+}
