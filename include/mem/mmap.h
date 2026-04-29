@@ -12,6 +12,8 @@ typedef struct mmap_region {
 void           mmap_init();
 mmap_region_t* mmap_region_alloc();
 void           mmap_region_free(mmap_region_t* mmap);
+mmap_region_t* mmap_region_clone_list(mmap_region_t* head);
+void           mmap_region_free_list(mmap_region_t* head);
 void           mmap_show_mmaplist();
 
 #endif

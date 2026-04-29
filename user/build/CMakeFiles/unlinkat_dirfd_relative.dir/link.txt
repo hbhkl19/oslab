@@ -1,0 +1,1 @@
+riscv64-unknown-elf-gcc -march=rv64imac -mabi=lp64 -mcmodel=medany -fno-builtin -nostdinc -fno-stack-protector -ggdb -Wall -O3 -DNDEBUG  -nostdlib -T /home/hbh/oslab/oslab/user/lib/arch/riscv/user.ld -Ttext 0x1000 CMakeFiles/unlinkat_dirfd_relative.dir/src/oscomp/unlinkat_dirfd_relative.c.o -o riscv64/unlinkat_dirfd_relative  libulib.a 

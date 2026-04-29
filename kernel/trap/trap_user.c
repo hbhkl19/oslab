@@ -60,7 +60,8 @@ void trap_user_handler()
             }
             default:
                 printf("User interrupt: %s\n", interrupt_info[interrupt_id]);
-                panic("User interrupt not implemented");
+                printf("Kill pid=%d on unexpected user interrupt\n", p->pid);
+                proc_exit(-1);
         }
 
     }
@@ -87,31 +88,35 @@ void trap_user_handler()
             case 2: {
                 printf("Illegal instruction at sepc=0x%lx\n", sepc);
                 printf("Instruction bytes: 0x%x\n", stval);
-                panic("User illegal instruction");
+                printf("Kill pid=%d on illegal instruction\n", p->pid);
+                proc_exit(-1);
                 break;
             }
             
             // ========== 情况3：加载页错误 ==========
             case 13: {
                 printf("Load page fault at address 0x%lx, sepc=0x%lx\n", stval, sepc);
-                panic("User load page fault");
+                printf("Kill pid=%d on load page fault\n", p->pid);
+                proc_exit(-1);
                 break;
             }
             
             // ========== 情况4：存储页错误 ==========
             case 15: {
                 printf("Store page fault at address 0x%lx, sepc=0x%lx\n", stval, sepc);
-                panic("User store page fault");
+                printf("Kill pid=%d on store page fault\n", p->pid);
+                proc_exit(-1);
                 break;
             }
             
             // ========== 情况5：其他异常 ==========
             default: {
-                printf("User exception: cause=%d, pc=0x%lx, stval=0x%lx\n", exception_id, p->tf->epc, stval);               
+                printf("User exception: cause=%d, pc=0x%lx, stval=0x%lx\n", exception_id, p->tf->epc, stval);
                 if(exception_id < 16 && exception_info[exception_id]) {
                     printf("Exception: %s\n", exception_info[exception_id]);
                 }
-                panic("Unknown user exception");
+                printf("Kill pid=%d on user exception\n", p->pid);
+                proc_exit(-1);
                 break;
             }
         }

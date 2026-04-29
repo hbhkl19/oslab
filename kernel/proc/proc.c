@@ -47,6 +47,20 @@ static int alloc_pid()
     return tmp;
 }
 
+static void proc_write_user_tid(proc_t* p, uint64 addr, int tid)
+{
+    if(p == NULL || addr == 0) {
+        return;
+    }
+
+    pte_t* pte = vm_getpte(p->pgtbl, addr, false);
+    if(pte == NULL || !(*pte & PTE_V) || !(*pte & PTE_U) || !(*pte & PTE_W)) {
+        return;
+    }
+
+    uvm_copyout(p->pgtbl, addr, (uint64)&tid, sizeof(tid));
+}
+
 // 释放锁 + 调用 trap_user_return
 static void fork_return()
 {
@@ -73,8 +87,14 @@ proc_t* proc_alloc()
             p->heap_top = PGSIZE;
             p->ustack_pages = 1;
             p->cwd = NULL;
-            for(int j = 0; j < FILE_PER_PROC; j++)
+            p->mmap = NULL;
+            p->set_child_tid = 0;
+            p->clear_child_tid = 0;
+            strncpy(p->cwd_path, "/", sizeof(p->cwd_path));
+            for(int j = 0; j < FILE_PER_PROC; j++) {
                 p->filelist[j] = NULL;
+                p->fd_cloexec[j] = 0;
+            }
 
             // 分配内核栈
             p->kstack = (uint64)pmem_alloc(true);
@@ -147,10 +167,16 @@ void proc_free(proc_t* p)
             file_close(p->filelist[i]);
             p->filelist[i] = NULL;
         }
+        p->fd_cloexec[i] = 0;
     }
     if(p->cwd) {
         inode_free(p->cwd);
         p->cwd = NULL;
+    }
+    while(p->mmap) {
+        mmap_region_t* next = p->mmap->next;
+        mmap_region_free(p->mmap);
+        p->mmap = next;
     }
 
     p->pid = -1;
@@ -159,6 +185,7 @@ void proc_free(proc_t* p)
     p->sleep_space = NULL;
     p->heap_top = 0;
     p->ustack_pages = 0;
+    p->cwd_path[0] = '\0';
     p->state = UNUSED;
     memset(&p->ctx, 0, sizeof(p->ctx));
 }
@@ -178,8 +205,12 @@ void proc_init()
         procs[i].tf = NULL;
         procs[i].kstack = 0;
         procs[i].cwd = NULL;
-        for(int j = 0; j < FILE_PER_PROC; j++)
+        procs[i].mmap = NULL;
+        strncpy(procs[i].cwd_path, "/", sizeof(procs[i].cwd_path));
+        for(int j = 0; j < FILE_PER_PROC; j++) {
             procs[i].filelist[j] = NULL;
+            procs[i].fd_cloexec[j] = 0;
+        }
     }
     // 预留 proczero 为 procs[0]
     proczero = &procs[0];
@@ -203,6 +234,7 @@ int proc_fork()
     uvm_copy_pgtbl(parent->pgtbl, child->pgtbl, parent->heap_top, parent->ustack_pages, NULL);
     child->heap_top = parent->heap_top;
     child->ustack_pages = parent->ustack_pages;
+    child->mmap = mmap_region_clone_list(parent->mmap);
 
     // 复制 trapframe
     *(child->tf) = *(parent->tf);
@@ -211,11 +243,16 @@ int proc_fork()
     child->parent = parent;
     child->state = RUNNABLE;
     for(int i = 0; i < FILE_PER_PROC; i++) {
-        if(parent->filelist[i])
+        if(parent->filelist[i]) {
             child->filelist[i] = file_dup(parent->filelist[i]);
+            child->fd_cloexec[i] = parent->fd_cloexec[i];
+        }
     }
     if(parent->cwd)
         child->cwd = inode_dup(parent->cwd);
+    strncpy(child->cwd_path, parent->cwd_path, sizeof(child->cwd_path));
+    child->set_child_tid = parent->set_child_tid;
+    child->clear_child_tid = parent->clear_child_tid;
 
     int pid = child->pid;
 #ifdef PROC_DEBUG
@@ -229,7 +266,7 @@ int proc_fork()
 
 // clone 复制（带自定义栈）
 // 如果 stack != 0，子进程使用指定的栈
-int proc_clone(uint64 stack)
+int proc_clone(uint64 stack, uint64 ctid)
 {
     proc_t* child = proc_alloc();
     if(child == NULL) {
@@ -243,6 +280,7 @@ int proc_clone(uint64 stack)
     uvm_copy_pgtbl(parent->pgtbl, child->pgtbl, parent->heap_top, parent->ustack_pages, NULL);
     child->heap_top = parent->heap_top;
     child->ustack_pages = parent->ustack_pages;
+    child->mmap = mmap_region_clone_list(parent->mmap);
 
     // 复制 trapframe
     *(child->tf) = *(parent->tf);
@@ -256,11 +294,18 @@ int proc_clone(uint64 stack)
     child->parent = parent;
     child->state = RUNNABLE;
     for(int i = 0; i < FILE_PER_PROC; i++) {
-        if(parent->filelist[i])
+        if(parent->filelist[i]) {
             child->filelist[i] = file_dup(parent->filelist[i]);
+            child->fd_cloexec[i] = parent->fd_cloexec[i];
+        }
     }
     if(parent->cwd)
         child->cwd = inode_dup(parent->cwd);
+    strncpy(child->cwd_path, parent->cwd_path, sizeof(child->cwd_path));
+    child->set_child_tid = ctid;
+    child->clear_child_tid = ctid ? ctid : parent->clear_child_tid;
+
+    proc_write_user_tid(child, ctid, child->pid);
 
     int pid = child->pid;
 #ifdef PROC_DEBUG
@@ -285,9 +330,10 @@ void proc_yield()
 }
 
 // 等待一个子进程进入 ZOMBIE 状态
+// target_pid = -1 表示任意子进程，否则等待指定 pid
 // 将退出的子进程的exit_state放入用户给的地址 addr
 // 成功返回子进程pid，失败返回-1
-int proc_wait(uint64 addr)
+int proc_wait(int target_pid, uint64 addr)
 {
     proc_t* p = myproc();
     spinlock_acquire(&p->lk);
@@ -295,22 +341,29 @@ int proc_wait(uint64 addr)
         int havekids = 0;
         for(int i = 0; i < NPROC; i++) {
             proc_t* cp = &procs[i];
-        if(cp == p) {
-            continue;
-        }
-        spinlock_acquire(&cp->lk);
-        if(cp->parent == p) {
-            havekids = 1;
-            if(cp->state == ZOMBIE) {
-                int pid = cp->pid;
+            if(cp == p) {
+                continue;
+            }
+            spinlock_acquire(&cp->lk);
+            if(cp->parent == p && (target_pid == -1 || cp->pid == target_pid)) {
+                havekids = 1;
+                if(cp->state == ZOMBIE) {
+                    int pid = cp->pid;
 #ifdef PROC_DEBUG
-                printf("[proc] wait: reap child=%d exit_state=%d\n", pid, cp->exit_state);
+                    printf("[proc] wait: reap child=%d exit_state=%d\n", pid, cp->exit_state);
 #endif
-                if(addr != 0) {
-                    uvm_copyout(p->pgtbl, addr, (uint64)&cp->exit_state, sizeof(int));
-                }
-                proc_free(cp);
-                spinlock_release(&cp->lk);
+                    if(addr != 0) {
+                        uvm_copyout(p->pgtbl, addr, (uint64)&cp->exit_state, sizeof(int));
+                    }
+                    if(cp->clear_child_tid) {
+                        int zero = 0;
+                        pte_t* pte = vm_getpte(p->pgtbl, cp->clear_child_tid, false);
+                        if(pte != NULL && (*pte & PTE_V) && (*pte & PTE_U) && (*pte & PTE_W)) {
+                            uvm_copyout(p->pgtbl, cp->clear_child_tid, (uint64)&zero, sizeof(int));
+                        }
+                    }
+                    proc_free(cp);
+                    spinlock_release(&cp->lk);
                     spinlock_release(&p->lk);
                     return pid;
                 }
@@ -320,7 +373,7 @@ int proc_wait(uint64 addr)
 
         if(!havekids) {
 #ifdef PROC_DEBUG
-            printf("[proc] wait: no children for pid=%d\n", p->pid);
+            printf("[proc] wait: no matching child for pid=%d target=%d\n", p->pid, target_pid);
 #endif
             spinlock_release(&p->lk);
             return -1;
@@ -360,12 +413,21 @@ void proc_exit(int exit_state)
     spinlock_acquire(&p->lk);
     p->exit_state = exit_state << 8;  // Linux 格式: 低 8 位是信号，高 8 位是退出码
 
+    if(p->clear_child_tid) {
+        int zero = 0;
+        pte_t* pte = vm_getpte(p->pgtbl, p->clear_child_tid, false);
+        if(pte != NULL && (*pte & PTE_V) && (*pte & PTE_U) && (*pte & PTE_W)) {
+            uvm_copyout(p->pgtbl, p->clear_child_tid, (uint64)&zero, sizeof(int));
+        }
+    }
+
     // 关闭文件和cwd
     for(int i = 0; i < FILE_PER_PROC; i++) {
         if(p->filelist[i]) {
             file_close(p->filelist[i]);
             p->filelist[i] = NULL;
         }
+        p->fd_cloexec[i] = 0;
     }
     if(p->cwd) {
         inode_free(p->cwd);
@@ -578,6 +640,7 @@ void proc_make_first()
 
     // 设置当前工作目录为根目录
     p->cwd = inode_alloc(INODE_ROOT);
+    strncpy(p->cwd_path, "/", sizeof(p->cwd_path));
 
     // 简单的标准输入输出: 绑定到控制台设备
     // fd 0 = stdin
@@ -588,7 +651,9 @@ void proc_make_first()
     f_stdin->major = DEV_CONSOLE;
     f_stdin->offset = 0;
     f_stdin->ip = NULL;
+    f_stdin->status_flags = OPEN_RDONLY;
     p->filelist[0] = f_stdin;
+    p->fd_cloexec[0] = 0;
 
     // fd 1 = stdout
     file_t* f_stdout = file_alloc();
@@ -598,7 +663,9 @@ void proc_make_first()
     f_stdout->major = DEV_CONSOLE;
     f_stdout->offset = 0;
     f_stdout->ip = NULL;
+    f_stdout->status_flags = OPEN_WRONLY;
     p->filelist[1] = f_stdout;
+    p->fd_cloexec[1] = 0;
 
     // fd 2 = stderr
     file_t* f_stderr = file_alloc();
@@ -608,7 +675,9 @@ void proc_make_first()
     f_stderr->major = DEV_CONSOLE;
     f_stderr->offset = 0;
     f_stderr->ip = NULL;
+    f_stderr->status_flags = OPEN_WRONLY;
     p->filelist[2] = f_stderr;
+    p->fd_cloexec[2] = 0;
 
     p->tf->epc = 0x0; // 用户代码入口地址 (_start)
     p->tf->kernel_satp = r_satp(); // 内核页表

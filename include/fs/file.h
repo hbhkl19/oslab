@@ -2,6 +2,7 @@
 #define __FILE_H__
 
 #include "common.h"
+#include "fs/dir.h"
 
 // file->type 选项
 
@@ -22,6 +23,17 @@
 #define MODE_READ      0x2 // 读文件
 #define MODE_WRITE     0x4 // 写文件
 
+// Linux 风格的文件状态标志（内核内部使用）
+#define OPEN_ACCMODE         0x3
+#define OPEN_RDONLY          0x0
+#define OPEN_WRONLY          0x1
+#define OPEN_RDWR            0x2
+#define OPEN_APPEND          0x400
+#define OPEN_NONBLOCK        0x800
+#define OPEN_CLOEXEC         0x80000
+#define OPEN_DIRECTORY       0x0200000
+#define OPEN_DIRECTORY_LINUX 0x10000
+
 typedef struct inode inode_t;
 
 typedef struct file {
@@ -39,6 +51,12 @@ typedef struct file {
     
     // TMPFS 文件信息
     int tmpfs_idx;         // tmpfs 文件索引
+
+    // 打开该文件时解析出的路径，用于 dirfd 语义
+    char path[DIR_PATH_LEN];
+
+    // 共享的文件状态标志（供 fcntl(F_GETFL/F_SETFL) 使用）
+    uint32 status_flags;
     
     // Pipe 信息
     struct pipe* pipe;     // 管道指针
@@ -74,5 +92,6 @@ uint32  file_write(file_t* file, uint32 len, uint64 src, bool user);
 uint32  file_lseek(file_t* file, uint32 offset, int flags);
 file_t* file_dup(file_t* file);
 int     file_stat(file_t* file, uint64 addr);
+int     file_truncate(file_t* file);
 
 #endif

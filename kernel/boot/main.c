@@ -20,8 +20,9 @@
 #include "fs/tmpfs.h"
 #include "proc/proc.h"
 
-// 标志，用于通知其他核心 CPU 0 已经完成了主要初始化
+// 标志，用于通知其他核心初始化已完成
 volatile static int started = 0;
+volatile static int boot_hart = -1;
 
 int main()
 {
@@ -29,8 +30,8 @@ int main()
     // start.c 已经将 hart id 写入了 tp 寄存器
     int cpuid = r_tp();
 
-    if(cpuid == 0) {
-        // CPU 0 (主核心) 负责初始化所有全局系统
+    if(__sync_bool_compare_and_swap(&boot_hart, -1, cpuid)) {
+        // 第一个进入 main 的 hart 负责初始化所有全局系统
         
         print_init(); // 初始化 printf
         DEBUG_LOG("\n=== RISC-V OS Kernel Lab 6 ===\n\n");
@@ -41,14 +42,14 @@ int main()
         DEBUG_LOG("Initializing kvm (Kernel Virtual Memory)...\n");
         kvm_init();     // 创建内核页表
         
-        DEBUG_LOG("Initializing kvm_inithart (CPU 0 Paging)...\n");
-        kvm_inithart(); // 在 CPU 0 上启用分页
-        
+        DEBUG_LOG("Initializing kvm_inithart (boot hart paging)...\n");
+        kvm_inithart(); // 在 boot hart 上启用分页
+
         DEBUG_LOG("Initializing trap_kernel_init (Traps)...\n");
         trap_kernel_init(); // 初始化陷阱(timer, plic)
-        
-        DEBUG_LOG("Initializing trap_kernel_inithart (CPU 0 Traps)...\n");
-        trap_kernel_inithart(); // 设置 CPU 0 的 stvec 和 plic
+
+        DEBUG_LOG("Initializing trap_kernel_inithart (boot hart traps)...\n");
+        trap_kernel_inithart(); // 设置 boot hart 的 stvec 和 plic
         
         DEBUG_LOG("Initializing uart (Serial Device)...\n");
         uart_init();    // 初始化 UART
@@ -80,7 +81,7 @@ int main()
             file_init();
         }
         
-        DEBUG_LOG("Initialization complete on CPU 0.\n\n");
+        DEBUG_LOG("Initialization complete on boot hart %d.\n\n", cpuid);
 
         proc_init();    // 初始化进程表
         proc_make_first(); // 创建第一个用户进程
@@ -94,7 +95,7 @@ int main()
     } else {
         // 其他核心 (CPU 1...N)
         
-        // 等待 CPU 0 完成初始化
+        // 等待 boot hart 完成初始化
         while(started == 0);
         __sync_synchronize();
 

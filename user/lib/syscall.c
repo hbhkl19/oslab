@@ -38,6 +38,11 @@ pid_t getppid(void)
     return syscall(SYS_getppid);
 }
 
+int sys_set_tid_address(int *tidptr)
+{
+    return syscall(SYS_set_tid_address, tidptr);
+}
+
 int sched_yield(void)
 {
     return syscall(SYS_sched_yield);
@@ -55,6 +60,11 @@ pid_t clone(int (*fn)(void *arg), void *arg, void *stack, size_t stack_size, uns
 
     return __clone(fn, stack, flags, NULL, NULL, NULL);
     //return syscall(SYS_clone, fn, stack, flags, NULL, NULL, NULL);
+}
+
+long sys_clone_raw(unsigned long flags, void *stack, int *ptid, void *tls, int *ctid)
+{
+    return syscall(SYS_clone, flags, stack, ptid, tls, ctid);
 }
 void exit(int code)
 {
@@ -122,6 +132,11 @@ void *mmap(void *start, size_t len, int prot, int flags, int fd, off_t off)
     return syscall(SYS_mmap, start, len, prot, flags, fd, off);
 }
 
+int mprotect(void *addr, size_t len, int prot)
+{
+    return syscall(SYS_mprotect, addr, len, prot);
+}
+
 int munmap(void *start, size_t len)
 {
     return syscall(SYS_munmap, start, len);
@@ -150,6 +165,11 @@ int mailwrite(int pid, void *buf, int len)
 int fstat(int fd, struct kstat *st)
 {
     return syscall(SYS_fstat, fd, st);
+}
+
+int sys_mkdirat(int dirfd, const char *path, mode_t mode)
+{
+    return syscall(SYS_mkdirat, dirfd, path, mode);
 }
 
 int sys_linkat(int olddirfd, char *oldpath, int newdirfd, char *newpath, unsigned int flags)

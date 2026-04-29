@@ -63,6 +63,7 @@ void     inode_unlock_free(inode_t* ip);      // 解锁 + 释放
 uint32   inode_read_data(inode_t* ip, uint32 offset, uint32 len, void* dst, bool user);
 uint32   inode_write_data(inode_t* ip, uint32 offset, uint32 len, void* src, bool user);
 void     inode_free_data(inode_t* ip);
+void     inode_truncate(inode_t* ip);
 
 // for debug
 

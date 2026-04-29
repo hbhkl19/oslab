@@ -117,7 +117,12 @@ typedef struct proc {
     context_t ctx;           // 内核态进程上下文
 
     file_t* filelist[FILE_PER_PROC]; // 打开的文件表
+    uint8 fd_cloexec[FILE_PER_PROC]; // 每个 fd 的 close-on-exec 标记
     inode_t* cwd;            // 当前工作目录
+    char cwd_path[128];      // 当前工作目录字符串路径
+    mmap_region_t* mmap;     // mmap 区域链
+    uint64 set_child_tid;    // 用户态 child tid 指针
+    uint64 clear_child_tid;  // 用户态 clear tid 指针
 } proc_t;
 
 
@@ -127,8 +132,8 @@ pgtbl_t  proc_pgtbl_init(uint64 trapframe);            // 进程页表的初始�
 proc_t*  proc_alloc();                                 // 进程申请
 void     proc_free(proc_t* p);                         // 进程释放
 int      proc_fork();                                  // 复制子进程
-int      proc_clone(uint64 stack);                     // clone子进程（带自定义栈）
-int      proc_wait(uint64 addr);                       // 等待子进程退出
+int      proc_clone(uint64 stack, uint64 ctid);        // clone子进程（带自定义栈）
+int      proc_wait(int target_pid, uint64 addr);       // 等待子进程退出
 void     proc_exit(int exit_state);                    // 进程退出
 void     proc_yield();                                 // 进程放弃CPU
 void     proc_sleep(void* sleep_space, spinlock_t* lk);// 进程睡眠

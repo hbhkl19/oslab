@@ -7,5 +7,6 @@
         "uart.h": "c",
         "print.h": "c",
         "riscv.h": "c"
-    }
+    },
+    "cmake.ignoreCMakeListsMissing": true
 }

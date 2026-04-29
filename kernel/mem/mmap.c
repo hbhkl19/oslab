@@ -59,6 +59,35 @@ void mmap_region_free(mmap_region_t* mmap)
     spinlock_release(&list_lk);
 }
 
+mmap_region_t* mmap_region_clone_list(mmap_region_t* head)
+{
+    mmap_region_t* new_head = NULL;
+    mmap_region_t* tail = NULL;
+    while(head != NULL) {
+        mmap_region_t* node = mmap_region_alloc();
+        node->begin = head->begin;
+        node->npages = head->npages;
+        node->next = NULL;
+        if(new_head == NULL) {
+            new_head = node;
+        } else {
+            tail->next = node;
+        }
+        tail = node;
+        head = head->next;
+    }
+    return new_head;
+}
+
+void mmap_region_free_list(mmap_region_t* head)
+{
+    while(head != NULL) {
+        mmap_region_t* next = head->next;
+        mmap_region_free(head);
+        head = next;
+    }
+}
+
 // 输出仓库里可用的 mmap_region_node_t
 // for debug
 void mmap_show_mmaplist()

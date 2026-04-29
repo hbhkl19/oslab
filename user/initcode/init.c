@@ -1,7 +1,6 @@
 // init.c - 第一个用户进程
-// 功能: 扫描 FAT32 根目录并依次执行 ELF 测试程序
+// 功能: 优先扫描并执行 *_testcode.sh，若未发现脚本则回退执行 ELF
 
-// 系统调用号 (Linux RISC-V)
 #define SYS_write       64
 #define SYS_read        63
 #define SYS_close       57
@@ -27,7 +26,6 @@ struct linux_dirent64 {
     char           d_name[];
 };
 
-// 内联系统调用
 static long syscall1(long n, long a0) {
     register long a7 asm("a7") = n;
     register long _a0 asm("a0") = a0;
@@ -65,59 +63,70 @@ static long syscall5(long n, long a0, long a1, long a2, long a3, long a4) {
     return _a0;
 }
 
-// 简单的字符串长度
 static int my_strlen(const char* s) {
     int n = 0;
     while(*s++) n++;
     return n;
 }
 
-// 打印字符串
 static void print(const char* s) {
     syscall3(SYS_write, 1, (long)s, my_strlen(s));
 }
 
-// fork
 static long my_fork() {
     return syscall5(SYS_clone, SIGCHLD, 0, 0, 0, 0);
 }
 
-// exec
 static long my_exec(const char* path, char* const argv[]) {
     return syscall3(SYS_execve, (long)path, (long)argv, 0);
 }
 
-// wait
 static long my_wait() {
     return syscall4(SYS_wait4, -1, 0, 0, 0);
 }
 
-// exit
 static void my_exit(int code) {
     syscall1(SYS_exit, code);
 }
 
-// open (只读)
 static int my_open_ro(const char* path) {
     return syscall5(SYS_openat, AT_FDCWD, (long)path, 0, 0, 0);
 }
 
-// close
 static int my_close(int fd) {
     return syscall1(SYS_close, fd);
 }
 
-// read
 static int my_read(int fd, void* buf, int len) {
     return syscall3(SYS_read, fd, (long)buf, len);
 }
 
-// getdents64
 static int my_getdents(int fd, void* buf, int len) {
     return syscall3(SYS_getdents64, fd, (long)buf, len);
 }
 
-// 拼接路径 "/name"
+static int streq(const char* a, const char* b) {
+    while(*a && *b) {
+        if(*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static int ends_with(const char* s, const char* suffix) {
+    int slen = my_strlen(s);
+    int tlen = my_strlen(suffix);
+    if(slen < tlen) return 0;
+    s += slen - tlen;
+    while(*suffix) {
+        if(*s != *suffix) return 0;
+        s++;
+        suffix++;
+    }
+    return 1;
+}
+
 static void build_path(const char* name, char* out, int maxlen) {
     int i = 0;
     if(maxlen <= 0) return;
@@ -128,7 +137,6 @@ static void build_path(const char* name, char* out, int maxlen) {
     out[i] = '\0';
 }
 
-// 检查 ELF 魔数
 static int is_elf(const char* path) {
     unsigned char hdr[4];
     int fd = my_open_ro(path);
@@ -142,7 +150,6 @@ static int is_elf(const char* path) {
 static unsigned seen_tests[MAX_TESTS];
 static int seen_cnt = 0;
 
-// 简单的FNV哈希，用于去重，避免大数组
 static unsigned hash_path(const char* s) {
     unsigned h = 2166136261u;
     while(*s) {
@@ -166,9 +173,8 @@ static void record_seen(const char* path) {
     seen_tests[seen_cnt++] = hash_path(path);
 }
 
-// 运行单个测试
-static void run_test(const char* path) {
-    print("Testing: ");
+static void run_elf(const char* path) {
+    print("Testing ELF: ");
     print(path);
     print("\n");
 
@@ -186,9 +192,70 @@ static void run_test(const char* path) {
     print("\n");
 }
 
-// 扫描根目录并按顺序执行每个 ELF 文件
-static void run_all_tests() {
-    char buf[512];
+static void run_script(const char* path) {
+    print("Testing script: ");
+    print(path);
+    print("\n");
+
+    long pid = my_fork();
+    if(pid == 0) {
+        if(is_elf(path)) {
+            char* argv0[] = {(char*)path, 0};
+            my_exec(path, argv0);
+        }
+
+        char* argv1[] = {"busybox", "sh", (char*)path, 0};
+        my_exec("/busybox", argv1);
+
+        char* argv2[] = {"busybox", (char*)path, 0};
+        my_exec("/busybox", argv2);
+
+        print("  script exec failed!\n");
+        my_exit(-1);
+    } else if(pid > 0) {
+        my_wait();
+    } else {
+        print("  fork failed!\n");
+    }
+    print("\n");
+}
+
+static int scan_and_run_scripts(void) {
+    char buf[1024];
+    char path[128];
+    int ran = 0;
+
+    int fd = my_open_ro("/");
+    if(fd < 0) {
+        print("Failed to open root directory\n");
+        return 0;
+    }
+
+    for(;;) {
+        int nread = my_getdents(fd, buf, sizeof(buf));
+        if(nread <= 0) break;
+
+        int bpos = 0;
+        while(bpos < nread) {
+            struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);
+            if(d->d_type == DT_REG && d->d_name[0] != '.') {
+                build_path(d->d_name, path, sizeof(path));
+                if(ends_with(d->d_name, "_testcode.sh") && !already_seen(path)) {
+                    record_seen(path);
+                    run_script(path);
+                    ran = 1;
+                }
+            }
+            bpos += d->d_reclen;
+        }
+    }
+
+    my_close(fd);
+    return ran;
+}
+
+static void run_fallback_elves(void) {
+    char buf[1024];
     char path[128];
 
     int fd = my_open_ro("/");
@@ -201,24 +268,22 @@ static void run_all_tests() {
         int nread = my_getdents(fd, buf, sizeof(buf));
         if(nread <= 0) break;
 
-        int new_ran = 0;
-
         int bpos = 0;
         while(bpos < nread) {
             struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);
             if(d->d_type == DT_REG && d->d_name[0] != '.') {
                 build_path(d->d_name, path, sizeof(path));
+                if(streq(d->d_name, "busybox") || streq(d->d_name, "lua")) {
+                    bpos += d->d_reclen;
+                    continue;
+                }
                 if(is_elf(path) && !already_seen(path)) {
                     record_seen(path);
-                    run_test(path);
-                    new_ran = 1;
+                    run_elf(path);
                 }
             }
             bpos += d->d_reclen;
         }
-
-        // 如果本轮没有新的可执行文件，避免重复循环
-        if(!new_ran) break;
     }
 
     my_close(fd);
@@ -227,7 +292,10 @@ static void run_all_tests() {
 __attribute__((section(".text.start")))
 void _start() {
     print("\n===== OS Test Runner =====\n\n");
-    run_all_tests();
+    if(!scan_and_run_scripts()) {
+        print("No *_testcode.sh found, fallback to ELF scan\n\n");
+        run_fallback_elves();
+    }
     print("===== All Tests Done =====\n");
     my_exit(0);
 }

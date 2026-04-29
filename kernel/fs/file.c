@@ -83,6 +83,10 @@ file_t* file_alloc()
             ftable[i].ip = NULL;
             ftable[i].fat32_cluster = 0;
             ftable[i].fat32_size = 0;
+            ftable[i].tmpfs_idx = -1;
+            ftable[i].path[0] = '\0';
+            ftable[i].status_flags = 0;
+            ftable[i].pipe = NULL;
             spinlock_release(&lk_ftable);
             return &ftable[i];
         }
@@ -106,6 +110,7 @@ file_t* file_create_dev(char* path, uint16 major, uint16 minor)
     f->major = major;
     f->ip = ip;
     f->offset = 0;
+    f->status_flags = OPEN_RDWR;
     return f;
 }
 
@@ -133,6 +138,8 @@ file_t* file_open(char* path, uint32 open_mode)
     f->readable = open_mode & MODE_READ;
     f->writable = open_mode & MODE_WRITE;
     f->major = ip->major;
+    safestrcpy(f->path, path, sizeof(f->path));
+    f->status_flags = f->writable ? (f->readable ? OPEN_RDWR : OPEN_WRONLY) : OPEN_RDONLY;
 
     if(ip->type == FT_DIR)
         f->type = FD_DIR;
@@ -161,6 +168,8 @@ file_t* file_open_fat32(const char* path, uint32 open_mode)
     f->ip = NULL;
     f->fat32_cluster = fat_file.cluster;
     f->fat32_size = fat_file.size;
+    safestrcpy(f->path, path, sizeof(f->path));
+    f->status_flags = OPEN_RDONLY;
     
     return f;
 }
@@ -181,6 +190,12 @@ void file_close(file_t* file)
     file->ip = NULL;
     file->readable = file->writable = false;
     file->offset = 0;
+    file->fat32_cluster = 0;
+    file->fat32_size = 0;
+    file->tmpfs_idx = -1;
+    file->path[0] = '\0';
+    file->status_flags = 0;
+    file->pipe = NULL;
     spinlock_release(&lk_ftable);
 
     if((f.type == FD_FILE || f.type == FD_DIR || f.type == FD_DEVICE) && f.ip) {
@@ -219,9 +234,8 @@ uint32 file_read(file_t* file, uint32 len, uint64 dst, bool user)
             if(r > 0) file->offset += r;
             return r;
         case FD_TMPFS: {
-            // 从内核缓冲区读取，然后复制到用户空间
-            static uint8 tmpbuf[4096];
-            if(len > 4096) len = 4096;
+            static uint8 tmpbuf[TMPFS_MAX_SIZE];
+            if(len > TMPFS_MAX_SIZE) len = TMPFS_MAX_SIZE;
             r = tmpfs_read(file->tmpfs_idx, file->offset, tmpbuf, len);
             if(r > 0) {
                 if(user) {
@@ -254,15 +268,20 @@ uint32 file_write(file_t* file, uint32 len, uint64 src, bool user)
             return devlist[file->major].write(len, src, user);
         case FD_FILE: {
             inode_lock(file->ip);
+            if(file->status_flags & OPEN_APPEND) {
+                file->offset = file->ip->size;
+            }
             uint32 r = inode_write_data(file->ip, file->offset, len, (void*)src, user);
             file->offset += r;
             inode_unlock(file->ip);
             return r;
         }
         case FD_TMPFS: {
-            // 从用户空间复制到内核缓冲区，然后写入
-            static uint8 tmpbuf[4096];
-            if(len > 4096) len = 4096;
+            static uint8 tmpbuf[TMPFS_MAX_SIZE];
+            if(len > TMPFS_MAX_SIZE) len = TMPFS_MAX_SIZE;
+            if(file->status_flags & OPEN_APPEND) {
+                file->offset = tmpfs_get_size(file->tmpfs_idx);
+            }
             if(user) {
                 uvm_copyin(myproc()->pgtbl, (uint64)tmpbuf, src, len);
             } else {
@@ -402,4 +421,25 @@ int file_stat(file_t* file, uint64 addr)
         return 0;
     }
     return -1;
+}
+
+int file_truncate(file_t* file)
+{
+    if(file == NULL) return -1;
+
+    switch(file->type) {
+        case FD_FILE:
+            inode_lock(file->ip);
+            inode_truncate(file->ip);
+            inode_unlock(file->ip);
+            file->offset = 0;
+            return 0;
+        case FD_TMPFS:
+            if(tmpfs_truncate(file->tmpfs_idx) < 0)
+                return -1;
+            file->offset = 0;
+            return 0;
+        default:
+            return -1;
+    }
 }

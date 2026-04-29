@@ -423,6 +423,12 @@ void inode_free_data(inode_t* ip)
     inode_rw(ip, true);
 }
 
+void inode_truncate(inode_t* ip)
+{
+    assert(sleeplock_holding(&ip->slk), "inode_truncate: lock");
+    inode_free_data(ip);
+}
+
 static char* inode_types[] = {
     "INODE_UNUSED",
     "INODE_DIR",

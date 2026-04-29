@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake --build \"/home/hbh/oslab/oslab/user/build\" --target clear_child_tid_exit)",
+      "Bash(mcopy -o -i \"/home/hbh/oslab/oslab/sdcard.img\" \"/home/hbh/oslab/oslab/user/build/riscv64/clear_child_tid_exit\" ::clear_child_tid_exit)"
+    ]
+  }
+}

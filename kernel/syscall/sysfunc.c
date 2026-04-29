@@ -20,7 +20,154 @@
 
 #define ELF_MAXARGS 16
 #define O_CREATE    0x40
+#define O_TRUNC     0x200
 #define O_DIRECTORY 0x200000
+#define O_DIRECTORY_LINUX 0x10000
+#define O_APPEND    0x400
+#define O_NONBLOCK  0x800
+#define O_CLOEXEC   0x80000
+#define AT_FDCWD    (-100)
+#define DT_UNKNOWN  0
+#define DT_DIR      4
+#define DT_REG      8
+
+typedef struct {
+    uint32 c_iflag;
+    uint32 c_oflag;
+    uint32 c_cflag;
+    uint32 c_lflag;
+    uint8 c_line;
+    uint8 c_cc[19];
+} linux_termios_t;
+
+typedef struct {
+    uint16 ws_row;
+    uint16 ws_col;
+    uint16 ws_xpixel;
+    uint16 ws_ypixel;
+} linux_winsize_t;
+
+static linux_termios_t console_termios = {
+    .c_iflag = 0,
+    .c_oflag = 0x5,
+    .c_cflag = 0xbf,
+    .c_lflag = 0x8a3b,
+    .c_line = 0,
+    .c_cc = {0},
+};
+
+static linux_winsize_t console_winsize = {
+    .ws_row = 24,
+    .ws_col = 80,
+    .ws_xpixel = 0,
+    .ws_ypixel = 0,
+};
+
+static void normalize_absolute_path(const char* path, char* out)
+{
+    int len = 1;
+    out[0] = '/';
+    out[1] = '\0';
+
+    const char* p = path;
+    while(*p != '\0') {
+        while(*p == '/') p++;
+        if(*p == '\0') break;
+
+        const char* seg = p;
+        int seg_len = 0;
+        while(p[seg_len] != '\0' && p[seg_len] != '/') seg_len++;
+        p += seg_len;
+
+        if(seg_len == 1 && seg[0] == '.') {
+            continue;
+        }
+        if(seg_len == 2 && seg[0] == '.' && seg[1] == '.') {
+            if(len > 1) {
+                len--;
+                while(len > 1 && out[len - 1] != '/') len--;
+                out[len] = '\0';
+            }
+            continue;
+        }
+
+        if(len > 1 && len < DIR_PATH_LEN - 1) {
+            out[len++] = '/';
+        }
+        for(int i = 0; i < seg_len && len < DIR_PATH_LEN - 1; i++) {
+            out[len++] = seg[i];
+        }
+        out[len] = '\0';
+    }
+}
+
+static void build_path_from_base(const char* base, const char* path, char* out)
+{
+    char joined[DIR_PATH_LEN];
+
+    if(path[0] == '/') {
+        normalize_absolute_path(path, out);
+        return;
+    }
+
+    const char* use_base = base;
+    if(use_base == NULL || use_base[0] == '\0') {
+        use_base = "/";
+    }
+
+    safestrcpy(joined, use_base, sizeof(joined));
+    int len = strlen(joined);
+    if(len == 0) {
+        joined[0] = '/';
+        joined[1] = '\0';
+        len = 1;
+    }
+    if(len > 1 && joined[len - 1] == '/') {
+        joined[len - 1] = '\0';
+        len--;
+    }
+    if(len < DIR_PATH_LEN - 1) {
+        joined[len++] = '/';
+        joined[len] = '\0';
+    }
+    safestrcpy(joined + len, path, sizeof(joined) - len);
+    normalize_absolute_path(joined, out);
+}
+
+static void resolve_user_path(char* out, const char* path)
+{
+    proc_t* p = myproc();
+    const char* cwd = "/";
+    if(p && p->cwd_path[0] != '\0') {
+        cwd = p->cwd_path;
+    }
+    build_path_from_base(cwd, path, out);
+}
+
+static int resolve_at_path(int dirfd, const char* path, char* out)
+{
+    proc_t* p = myproc();
+    if(dirfd == AT_FDCWD) {
+        resolve_user_path(out, path);
+        return 0;
+    }
+
+    if(dirfd < 0 || dirfd >= FILE_PER_PROC || p->filelist[dirfd] == NULL) {
+        return -1;
+    }
+
+    file_t* dir = p->filelist[dirfd];
+    if(dir->type == FD_TMPFS) {
+        if(tmpfs_get_type(dir->tmpfs_idx) != TMPFS_TYPE_DIR) {
+            return -1;
+        }
+    } else if(dir->type != FD_DIR && dir->type != FD_FAT32) {
+        return -1;
+    }
+
+    build_path_from_base(dir->path, path, out);
+    return 0;
+}
 
 // 堆伸缩
 // uint64 new_heap_top 新的堆顶 (如果是0代表查询, 返回旧的堆顶)
@@ -131,6 +278,19 @@ uint64 sys_mmap()
     if(new_top != old + need) {
         return (uint64)-1;
     }
+
+    mmap_region_t* region = mmap_region_alloc();
+    region->begin = old;
+    region->npages = need / PGSIZE;
+    region->next = NULL;
+    if(p->mmap == NULL) {
+        p->mmap = region;
+    } else {
+        mmap_region_t* tail = p->mmap;
+        while(tail->next != NULL) tail = tail->next;
+        tail->next = region;
+    }
+
     p->heap_top = new_top;
 
     // 如果提供了 fd，将文件内容复制到映射区域
@@ -155,8 +315,61 @@ uint64 sys_mmap()
 // 成功返回0 失败返回-1
 uint64 sys_munmap()
 {
-    // 简化: 未实现真正的 munmap, 直接返回成功
-    return 0;
+    proc_t* p = myproc();
+    uint64 start, len64;
+
+    arg_uint64(0, &start);
+    arg_uint64(1, &len64);
+
+    if(len64 == 0) {
+        return 0;
+    }
+    if(start % PGSIZE != 0) {
+        return -1;
+    }
+
+    uint64 len = PG_ROUND_UP(len64);
+    uint64 end = start + len;
+    if(end < start) {
+        return -1;
+    }
+
+    mmap_region_t* prev = NULL;
+    mmap_region_t* cur = p->mmap;
+    while(cur != NULL) {
+        uint64 cur_begin = cur->begin;
+        uint64 cur_end = cur->begin + (uint64)cur->npages * PGSIZE;
+        if(start >= cur_begin && end <= cur_end) {
+            vm_unmappages(p->pgtbl, start, end - start, true);
+
+            if(start == cur_begin && end == cur_end) {
+                if(prev) prev->next = cur->next;
+                else p->mmap = cur->next;
+                mmap_region_free(cur);
+            } else if(start == cur_begin) {
+                cur->begin = end;
+                cur->npages = (cur_end - end) / PGSIZE;
+            } else if(end == cur_end) {
+                cur->npages = (start - cur_begin) / PGSIZE;
+            } else {
+                mmap_region_t* tail = mmap_region_alloc();
+                tail->begin = end;
+                tail->npages = (cur_end - end) / PGSIZE;
+                tail->next = cur->next;
+                cur->next = tail;
+                cur->npages = (start - cur_begin) / PGSIZE;
+            }
+
+            if(end == p->heap_top) {
+                p->heap_top = start;
+            }
+            return 0;
+        }
+        prev = cur;
+        cur = cur->next;
+    }
+
+    return -1;
 }
 
 
@@ -300,7 +513,7 @@ uint64 sys_wait()
 {
     uint64 addr;
     arg_uint64(0, &addr);
-    return proc_wait(addr);
+    return proc_wait(-1, addr);
 }
 
 // 进程退出
@@ -554,6 +767,13 @@ uint64 sys_exec()
               path, ehdr.entry, sp, argc, argv_ptr, new_heap_top);
 
     // 销毁旧页表，关闭文件
+    for(int i = 0; i < FILE_PER_PROC; i++) {
+        if(p->filelist[i] && p->fd_cloexec[i]) {
+            file_close(p->filelist[i]);
+            p->filelist[i] = NULL;
+            p->fd_cloexec[i] = 0;
+        }
+    }
     uvm_destroy_pgtbl(old);
     file_close(f);
     sfence_vma();
@@ -597,10 +817,12 @@ uint64 sys_sched_yield()
     return 0;
 }
 
-// SYS_set_tid_address (96) - 设置tid地址 (简化实现)
+// SYS_set_tid_address (96) - 设置tid地址
 uint64 sys_set_tid_address()
 {
-    // 简化: 忽略参数，返回当前pid
+    uint64 tidptr;
+    arg_uint64(0, &tidptr);
+    myproc()->clear_child_tid = tidptr;
     return myproc()->pid;
 }
 
@@ -610,16 +832,18 @@ uint64 sys_gettimeofday()
     uint64 tv_addr, tz_addr;
     arg_uint64(0, &tv_addr);
     arg_uint64(1, &tz_addr);
-    
-    uint64 ticks = timer_get_ticks();
+    (void)tz_addr;
+
+    uint64 now = r_time();
     struct {
         uint64 tv_sec;
         uint64 tv_usec;
     } tv;
-    // 假设 10 ticks = 1秒 (根据实际timer配置调整)
-    tv.tv_sec = ticks / 10;
-    tv.tv_usec = (ticks % 10) * 100000;
-    
+
+    // QEMU virt timer frequency is 10MHz
+    tv.tv_sec = now / 10000000ULL;
+    tv.tv_usec = (now % 10000000ULL) / 10ULL;
+
     if(tv_addr)
         uvm_copyout(myproc()->pgtbl, tv_addr, (uint64)&tv, sizeof(tv));
     return 0;
@@ -712,29 +936,52 @@ uint64 sys_getcwd()
     uint32 size;
     arg_uint64(0, &buf);
     arg_uint32(1, &size);
-    
+
     if(size == 0) return 0;
 
     proc_t* p = myproc();
     const char* path = "/";
 
-    // 如果正在使用 tmpfs 的 cwd，就从 tmpfs 取路径；否则退回根目录
-    if(p && p->cwd == NULL) {
-        path = tmpfs_getcwd();
+    if(p && p->cwd_path[0] != '\0') {
+        path = p->cwd_path;
     }
 
     char tmp[DIR_PATH_LEN];
-    strncpy(tmp, path, DIR_PATH_LEN);
-    tmp[DIR_PATH_LEN - 1] = '\0';
+    safestrcpy(tmp, path, DIR_PATH_LEN);
 
-    uint32 len = strlen(tmp) + 1; // 包含结尾 \0
+    uint32 len = strlen(tmp) + 1;
     if(len > size) {
-        len = size;
-        tmp[size - 1] = '\0';
+        return 0;
     }
 
     uvm_copyout(p->pgtbl, buf, (uint64)tmp, len);
     return buf;
+}
+
+uint64 sys_chdir()
+{
+    char path[DIR_PATH_LEN];
+    char resolved[DIR_PATH_LEN];
+    arg_str(0, path, DIR_PATH_LEN);
+
+    resolve_user_path(resolved, path);
+
+    if(tmpfs_chdir(resolved) == 0) {
+        proc_t* p = myproc();
+        if(p) {
+            p->cwd = NULL;
+            safestrcpy(p->cwd_path, resolved, sizeof(p->cwd_path));
+        }
+        return 0;
+    }
+    if(dir_change(resolved) == 0) {
+        proc_t* p = myproc();
+        if(p) {
+            safestrcpy(p->cwd_path, resolved, sizeof(p->cwd_path));
+        }
+        return 0;
+    }
+    return -1;
 }
 
 // SYS_clone (220) - 创建子进程
@@ -747,9 +994,26 @@ uint64 sys_clone()
     arg_uint64(2, &ptid);
     arg_uint64(3, &tls);
     arg_uint64(4, &ctid);
-    
-    // 调用 proc_clone 创建子进程（带自定义栈）
-    return proc_clone(stack);
+    (void)tls;
+
+    int pid = proc_clone(stack, ctid);
+    if(pid < 0) {
+        return -1;
+    }
+
+    if(ptid) {
+        pte_t* pte = vm_getpte(myproc()->pgtbl, ptid, false);
+        if(pte != NULL && (*pte & PTE_V) && (*pte & PTE_U) && (*pte & PTE_W)) {
+            uvm_copyout(myproc()->pgtbl, ptid, (uint64)&pid, sizeof(int));
+        }
+    }
+    if(ctid) {
+        pte_t* pte = vm_getpte(myproc()->pgtbl, ctid, false);
+        if(pte != NULL && (*pte & PTE_V) && (*pte & PTE_U) && (*pte & PTE_W)) {
+            uvm_copyout(myproc()->pgtbl, ctid, (uint64)&pid, sizeof(int));
+        }
+    }
+    return pid;
 }
 
 // SYS_wait4 (260) - 等待子进程
@@ -765,8 +1029,11 @@ uint64 sys_wait4()
     arg_uint32(2, (uint32*)&options);
     // arg3 rusage 忽略
     
-    // pid=-1: 等待任意子进程
-    return proc_wait(wstatus_addr);
+    if(options != 0) {
+        return -1;
+    }
+
+    return proc_wait(pid, wstatus_addr);
 }
 
 // SYS_openat (56) - 打开文件
@@ -775,20 +1042,27 @@ uint64 sys_openat()
 {
     int dirfd;
     char path[DIR_PATH_LEN];
+    char resolved[DIR_PATH_LEN];
     uint32 flags, mode;
-    
+
     arg_uint32(0, (uint32*)&dirfd);
     arg_str(1, path, DIR_PATH_LEN);
     arg_uint32(2, &flags);
     arg_uint32(3, &mode);
-    
-    // dirfd = AT_FDCWD(-100) 表示当前目录
-    // 简化：忽略 dirfd，直接处理 path
-    
+    (void)mode;
+
+    if(dirfd != AT_FDCWD && dirfd < 0) {
+        return -1;
+    }
+
+    if(resolve_at_path(dirfd, path, resolved) < 0) {
+        return -1;
+    }
+
+    proc_t* p = myproc();
     file_t* file = NULL;
-    
-    // 特殊处理 "." 打开当前目录 (FAT32 根目录)
-    if(path[0] == '.' && path[1] == '\0') {
+
+    if((strncmp(resolved, "/", DIR_PATH_LEN) == 0) && !(flags & O_CREATE)) {
         file = file_alloc();
         if(file) {
             file->type = FD_FAT32;
@@ -798,61 +1072,94 @@ uint64 sys_openat()
             file->ip = NULL;
             file->fat32_cluster = fat32_get_root_cluster();
             file->fat32_size = 0;
+            safestrcpy(file->path, "/", sizeof(file->path));
+            file->status_flags = OPEN_RDONLY | OPEN_DIRECTORY;
             int fd = fd_alloc(file);
+            if(fd >= 0 && (flags & O_CLOEXEC)) p->fd_cloexec[fd] = 1;
             if(fd == -1) file_close(file);
             return fd;
         }
     }
-    
-    // 创建场景：始终在 tmpfs 中处理
+
     if(flags & O_CREATE) {
-        file = tmpfs_open(path, flags);
+        file = tmpfs_open(resolved, flags);
         if(file != NULL) {
             int type = tmpfs_get_type(file->tmpfs_idx);
-            if((flags & O_DIRECTORY) && type != TMPFS_TYPE_DIR) {
+            if((flags & (O_DIRECTORY | O_DIRECTORY_LINUX)) && type != TMPFS_TYPE_DIR) {
                 file_close(file);
                 return -1;
             }
             if(type == TMPFS_TYPE_DIR) {
                 file->writable = false;
+                file->status_flags |= OPEN_DIRECTORY;
+            }
+            file->status_flags = (file->status_flags & ~(OPEN_APPEND | OPEN_NONBLOCK | OPEN_CLOEXEC))
+                               | (flags & (O_APPEND | O_NONBLOCK));
+            if((flags & O_TRUNC) && file->writable) {
+                if(file_truncate(file) < 0) {
+                    file_close(file);
+                    return -1;
+                }
             }
             int fd = fd_alloc(file);
+            if(fd >= 0 && (flags & O_CLOEXEC)) p->fd_cloexec[fd] = 1;
             if(fd == -1) file_close(file);
             return fd;
         }
     }
-    
+
     uint32 open_mode = 0;
     if(flags & O_CREATE) open_mode |= MODE_CREATE;
-    // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
-    if((flags & 3) != 1) open_mode |= MODE_READ;  // 不是 O_WRONLY
-    if((flags & 3) != 0) open_mode |= MODE_WRITE; // 不是 O_RDONLY
+    if((flags & 3) != 1) open_mode |= MODE_READ;
+    if((flags & 3) != 0) open_mode |= MODE_WRITE;
 
-    // 非创建场景优先尝试 FAT32（SD 卡根目录及测试文件）
-    file = file_open_fat32(path, open_mode);
+    file = file_open_fat32(resolved, open_mode);
     if(file == NULL) {
-        // FAT32 失败后，如果 tmpfs 中已有同名条目则尝试 tmpfs
-        if(tmpfs_exists(path)) {
-            file = tmpfs_open(path, flags);
+        if(tmpfs_exists(resolved)) {
+            file = tmpfs_open(resolved, flags);
             if(file != NULL) {
                 int type = tmpfs_get_type(file->tmpfs_idx);
-                if((flags & O_DIRECTORY) && type != TMPFS_TYPE_DIR) {
+                if((flags & (O_DIRECTORY | O_DIRECTORY_LINUX)) && type != TMPFS_TYPE_DIR) {
                     file_close(file);
                     return -1;
                 }
                 if(type == TMPFS_TYPE_DIR) {
                     file->writable = false;
+                    file->status_flags |= OPEN_DIRECTORY;
+                }
+                file->status_flags = (file->status_flags & ~(OPEN_APPEND | OPEN_NONBLOCK | OPEN_CLOEXEC))
+                                   | (flags & (O_APPEND | O_NONBLOCK));
+                if((flags & O_TRUNC) && file->writable) {
+                    if(file_truncate(file) < 0) {
+                        file_close(file);
+                        return -1;
+                    }
                 }
             }
         }
     }
     if(file == NULL) {
-        // FAT32 和 tmpfs 都失败，回退原文件系统
-        file = file_open(path, open_mode);
+        file = file_open(resolved, open_mode);
     }
     if(file == NULL) return -1;
-    
+
+    if((flags & (O_DIRECTORY | O_DIRECTORY_LINUX)) && file->type != FD_DIR && file->type != FD_TMPFS && !(file->type == FD_FAT32 && strncmp(resolved, "/", DIR_PATH_LEN) == 0)) {
+        file_close(file);
+        return -1;
+    }
+    file->status_flags = (file->status_flags & ~(OPEN_APPEND | OPEN_NONBLOCK | OPEN_CLOEXEC))
+                       | (flags & (O_APPEND | O_NONBLOCK));
+    if(flags & (O_DIRECTORY | O_DIRECTORY_LINUX))
+        file->status_flags |= OPEN_DIRECTORY;
+    if((flags & O_TRUNC) && file->writable) {
+        if(file_truncate(file) < 0) {
+            file_close(file);
+            return -1;
+        }
+    }
+
     int fd = fd_alloc(file);
+    if(fd >= 0 && (flags & O_CLOEXEC)) p->fd_cloexec[fd] = 1;
     if(fd == -1) file_close(file);
     return fd;
 }
@@ -867,17 +1174,23 @@ uint64 sys_dup3()
     arg_uint32(1, (uint32*)&newfd);
     arg_uint32(2, &flags);
     
-    // 简化：忽略flags
     proc_t* p = myproc();
     if(oldfd < 0 || oldfd >= FILE_PER_PROC || p->filelist[oldfd] == NULL)
         return -1;
     if(newfd < 0 || newfd >= FILE_PER_PROC)
         return -1;
+    if(flags & ~O_CLOEXEC)
+        return -1;
+    if(oldfd == newfd)
+        return -1;
     
-    if(p->filelist[newfd])
+    if(p->filelist[newfd]) {
         file_close(p->filelist[newfd]);
+        p->filelist[newfd] = NULL;
+    }
     
     p->filelist[newfd] = file_dup(p->filelist[oldfd]);
+    p->fd_cloexec[newfd] = (flags & O_CLOEXEC) ? 1 : 0;
     return newfd;
 }
 
@@ -886,18 +1199,23 @@ uint64 sys_mkdirat()
 {
     int dirfd;
     char path[DIR_PATH_LEN];
+    char resolved[DIR_PATH_LEN];
     uint32 mode;
     
     arg_uint32(0, (uint32*)&dirfd);
     arg_str(1, path, DIR_PATH_LEN);
     arg_uint32(2, &mode);
-    
+    (void)mode;
+    if(resolve_at_path(dirfd, path, resolved) < 0) {
+        return -1;
+    }
+
     // 优先尝试在 tmpfs 中创建目录
-    int idx = tmpfs_create(path, TMPFS_TYPE_DIR);
+    int idx = tmpfs_create(resolved, TMPFS_TYPE_DIR);
     if(idx >= 0) return 0;
     
     // 回退到原始文件系统
-    inode_t* ip = path_create_inode(path, FT_DIR, 0, 0);
+    inode_t* ip = path_create_inode(resolved, FT_DIR, 0, 0);
     if(ip == NULL) return -1;
     inode_unlock_free(ip);
     return 0;
@@ -908,17 +1226,22 @@ uint64 sys_unlinkat()
 {
     int dirfd;
     char path[DIR_PATH_LEN];
+    char resolved[DIR_PATH_LEN];
     uint32 flags;
     
     arg_uint32(0, (uint32*)&dirfd);
     arg_str(1, path, DIR_PATH_LEN);
     arg_uint32(2, &flags);
-    
+
+    if(resolve_at_path(dirfd, path, resolved) < 0) {
+        return -1;
+    }
+
     // 优先尝试从 tmpfs 删除
-    if(tmpfs_unlink(path) == 0) return 0;
-    
+    if(tmpfs_unlink(resolved) == 0) return 0;
+
     // 回退到原始文件系统
-    return path_unlink(path);
+    return path_unlink(resolved);
 }
 
 // SYS_linkat (37) - 创建硬链接
@@ -926,6 +1249,7 @@ uint64 sys_linkat()
 {
     int olddirfd, newdirfd;
     char oldpath[DIR_PATH_LEN], newpath[DIR_PATH_LEN];
+    char oldresolved[DIR_PATH_LEN], newresolved[DIR_PATH_LEN];
     uint32 flags;
     
     arg_uint32(0, (uint32*)&olddirfd);
@@ -933,8 +1257,19 @@ uint64 sys_linkat()
     arg_uint32(2, (uint32*)&newdirfd);
     arg_str(3, newpath, DIR_PATH_LEN);
     arg_uint32(4, &flags);
-    
-    return path_link(oldpath, newpath);
+
+    if(resolve_at_path(olddirfd, oldpath, oldresolved) < 0) {
+        return -1;
+    }
+    if(resolve_at_path(newdirfd, newpath, newresolved) < 0) {
+        return -1;
+    }
+
+    if(tmpfs_exists(oldresolved)) {
+        return tmpfs_link(oldresolved, newresolved);
+    }
+
+    return path_link(oldresolved, newresolved);
 }
 
 // SYS_getdents64 (61) - 读目录项
@@ -951,78 +1286,147 @@ uint64 sys_getdents64()
     int fd;
     uint64 buf;
     uint32 count;
-    
+
     arg_uint32(0, (uint32*)&fd);
     arg_uint64(1, &buf);
     arg_uint32(2, &count);
-    
+
     proc_t* p = myproc();
     if(fd < 0 || fd >= FILE_PER_PROC || p->filelist[fd] == NULL)
         return -1;
-    
+
     file_t* f = p->filelist[fd];
-    
-    // 目前只支持 FAT32 目录
-    if(f->type != FD_FAT32) {
-        // 简化：非 FAT32 返回 0 表示目录读取完毕
-        return 0;
-    }
-    
-    // FAT32 目录遍历
-    uint32 dir_cluster = f->fat32_cluster;
-    if(dir_cluster == 0) {
-        dir_cluster = fat32_get_root_cluster();
-    }
-    
-    uint32 offset = f->offset;  // 使用 file offset 记录遍历位置
-    uint32 total = 0;
-    
-    // 临时缓冲区
-    static char name[256];
-    static uint8 dirent_buf[512];
-    
-    while(total + 32 < count) {
-        uint32 fsize;
-        uint8 ftype;
-        uint32 next_off;
-        
-        int ret = fat32_readdir(dir_cluster, offset, name, &fsize, &ftype, &next_off);
-        if(ret < 0) {
-            break;  // 目录结束或出错
+
+    if(f->type == FD_FAT32) {
+        uint32 dir_cluster = f->fat32_cluster;
+        if(dir_cluster == 0) {
+            dir_cluster = fat32_get_root_cluster();
         }
-        
-        // 计算 dirent64 大小 (需要 8 字节对齐)
-        uint32 name_len = strlen(name) + 1;
-        uint32 reclen = 8 + 8 + 2 + 1 + name_len;  // d_ino + d_off + d_reclen + d_type + d_name
-        reclen = (reclen + 7) & ~7;  // 8 字节对齐
-        
-        if(total + reclen > count) {
-            break;  // 缓冲区不够
+
+        uint32 offset = f->offset;
+        uint32 total = 0;
+
+        static char name[256];
+        static uint8 dirent_buf[512];
+
+        while(total + 32 < count) {
+            uint32 fsize;
+            uint8 ftype;
+            uint32 next_off;
+
+            int ret = fat32_readdir(dir_cluster, offset, name, &fsize, &ftype, &next_off);
+            if(ret < 0) {
+                break;
+            }
+
+            uint32 name_len = strlen(name) + 1;
+            uint32 reclen = 8 + 8 + 2 + 1 + name_len;
+            reclen = (reclen + 7) & ~7;
+
+            if(total + reclen > count) {
+                break;
+            }
+
+            memset(dirent_buf, 0, reclen);
+            uint64* d_ino = (uint64*)dirent_buf;
+            int64* d_off = (int64*)(dirent_buf + 8);
+            uint16* d_reclen = (uint16*)(dirent_buf + 16);
+            uint8* d_type = (uint8*)(dirent_buf + 18);
+            char* d_name = (char*)(dirent_buf + 19);
+
+            *d_ino = next_off;
+            *d_off = next_off;
+            *d_reclen = reclen;
+            *d_type = ftype;
+            strncpy(d_name, name, name_len + 1);
+
+            uvm_copyout(p->pgtbl, buf + total, (uint64)dirent_buf, reclen);
+
+            total += reclen;
+            offset = next_off;
         }
-        
-        // 构建 dirent64
-        memset(dirent_buf, 0, reclen);
-        uint64* d_ino = (uint64*)dirent_buf;
-        int64* d_off = (int64*)(dirent_buf + 8);
-        uint16* d_reclen = (uint16*)(dirent_buf + 16);
-        uint8* d_type = (uint8*)(dirent_buf + 18);
-        char* d_name = (char*)(dirent_buf + 19);
-        
-        *d_ino = next_off;  // 使用偏移作为 inode 号
-        *d_off = next_off;
-        *d_reclen = reclen;
-        *d_type = ftype;
-        strncpy(d_name, name, name_len + 1);
-        
-        // 复制到用户空间
-        uvm_copyout(p->pgtbl, buf + total, (uint64)dirent_buf, reclen);
-        
-        total += reclen;
-        offset = next_off;
+
+        f->offset = offset;
+        return total;
     }
-    
-    f->offset = offset;  // 更新遍历位置
-    return total;
+
+    if(f->type == FD_DIR) {
+        inode_lock(f->ip);
+        uint32 total = 0;
+        uint32 max = (f->ip->size > BLOCK_SIZE) ? BLOCK_SIZE : f->ip->size;
+        static uint8 dirent_buf[512];
+
+        while(f->offset < max && total + 32 < count) {
+            dirent_t de;
+            uint32 n = inode_read_data(f->ip, f->offset, sizeof(dirent_t), &de, false);
+            if(n != sizeof(dirent_t)) {
+                break;
+            }
+            f->offset += sizeof(dirent_t);
+            if(de.name[0] == 0) {
+                continue;
+            }
+
+            uint32 name_len = strlen(de.name) + 1;
+            uint32 reclen = 8 + 8 + 2 + 1 + name_len;
+            reclen = (reclen + 7) & ~7;
+            if(total + reclen > count) {
+                f->offset -= sizeof(dirent_t);
+                break;
+            }
+
+            memset(dirent_buf, 0, reclen);
+            *(uint64*)(dirent_buf + 0) = de.inode_num;
+            *(int64*)(dirent_buf + 8) = f->offset;
+            *(uint16*)(dirent_buf + 16) = (uint16)reclen;
+            *(uint8*)(dirent_buf + 18) = DT_REG;
+            strncpy((char*)(dirent_buf + 19), de.name, name_len + 1);
+
+            uvm_copyout(p->pgtbl, buf + total, (uint64)dirent_buf, reclen);
+            total += reclen;
+        }
+        inode_unlock(f->ip);
+        return total;
+    }
+
+    if(f->type == FD_TMPFS) {
+        uint32 cursor = f->offset;
+        uint32 total = 0;
+        static uint8 dirent_buf[512];
+        static char name[128];
+
+        while(total + 32 < count) {
+            uint8 dtype;
+            uint64 ino;
+            uint32 next_cursor = cursor;
+            if(tmpfs_readdir(f->tmpfs_idx, &next_cursor, name, sizeof(name), &dtype, &ino) < 0) {
+                break;
+            }
+
+            uint32 name_len = strlen(name) + 1;
+            uint32 reclen = 8 + 8 + 2 + 1 + name_len;
+            reclen = (reclen + 7) & ~7;
+            if(total + reclen > count) {
+                break;
+            }
+
+            memset(dirent_buf, 0, reclen);
+            *(uint64*)(dirent_buf + 0) = ino;
+            *(int64*)(dirent_buf + 8) = next_cursor;
+            *(uint16*)(dirent_buf + 16) = (uint16)reclen;
+            *(uint8*)(dirent_buf + 18) = (dtype == TMPFS_TYPE_DIR) ? DT_DIR : DT_REG;
+            strncpy((char*)(dirent_buf + 19), name, name_len + 1);
+
+            uvm_copyout(p->pgtbl, buf + total, (uint64)dirent_buf, reclen);
+            total += reclen;
+            cursor = next_cursor;
+        }
+
+        f->offset = cursor;
+        return total;
+    }
+
+    return 0;
 }
 
 // 简单管道实现
@@ -1074,6 +1478,19 @@ uint32 pipe_read(pipe_t* pi, uint64 dst, uint32 n, bool user)
     
     // 等待数据或写端关闭
     while(pi->nread == pi->nwrite && pi->writeopen) {
+        if(p) {
+            file_t* current = NULL;
+            for(int i = 0; i < FILE_PER_PROC; i++) {
+                if(p->filelist[i] && p->filelist[i]->type == FD_PIPE && p->filelist[i]->pipe == pi && !p->filelist[i]->writable) {
+                    current = p->filelist[i];
+                    break;
+                }
+            }
+            if(current && (current->status_flags & OPEN_NONBLOCK)) {
+                spinlock_release(&pi->lk);
+                return (uint32)-1;
+            }
+        }
         spinlock_release(&pi->lk);
         proc_yield();
         spinlock_acquire(&pi->lk);
@@ -1107,6 +1524,19 @@ uint32 pipe_write(pipe_t* pi, uint64 src, uint32 n, bool user)
             if(!pi->readopen) {
                 spinlock_release(&pi->lk);
                 return -1;  // 读端已关闭
+            }
+            if(p) {
+                file_t* current = NULL;
+                for(int j = 0; j < FILE_PER_PROC; j++) {
+                    if(p->filelist[j] && p->filelist[j]->type == FD_PIPE && p->filelist[j]->pipe == pi && p->filelist[j]->writable) {
+                        current = p->filelist[j];
+                        break;
+                    }
+                }
+                if(current && (current->status_flags & OPEN_NONBLOCK)) {
+                    spinlock_release(&pi->lk);
+                    return i ? i : (uint32)-1;
+                }
             }
             spinlock_release(&pi->lk);
             proc_yield();
@@ -1169,11 +1599,13 @@ uint64 sys_pipe2()
     rf->readable = true;
     rf->writable = false;
     rf->pipe = pi;
+    rf->status_flags = OPEN_RDONLY | (flags & O_NONBLOCK);
     
     wf->type = FD_PIPE;
     wf->readable = false;
     wf->writable = true;
     wf->pipe = pi;
+    wf->status_flags = OPEN_WRONLY | (flags & O_NONBLOCK);
     
     int fd0 = fd_alloc(rf);
     int fd1 = fd_alloc(wf);
@@ -1184,6 +1616,10 @@ uint64 sys_pipe2()
         file_close(wf);
         pipe_free(pi);
         return -1;
+    }
+    if(flags & O_CLOEXEC) {
+        myproc()->fd_cloexec[fd0] = 1;
+        myproc()->fd_cloexec[fd1] = 1;
     }
     
     // 复制 fd 到用户空间: fd[0]=读端, fd[1]=写端
@@ -1212,26 +1648,152 @@ uint64 sys_fcntl()
 {
     int fd;
     uint32 cmd;
+    uint64 arg = 0;
     arg_uint32(0, (uint32*)&fd);
     arg_uint32(1, &cmd);
-    
-    // 简化: 大部分返回0或-1
+    arg_uint64(2, &arg);
+
+    proc_t* p = myproc();
+    if(fd < 0 || fd >= FILE_PER_PROC || p->filelist[fd] == NULL)
+        return -1;
+
+    file_t* file = p->filelist[fd];
+
     // F_DUPFD=0, F_GETFD=1, F_SETFD=2, F_GETFL=3, F_SETFL=4
-    if(cmd == 1 || cmd == 3) return 0;  // F_GETFD, F_GETFL
-    if(cmd == 2 || cmd == 4) return 0;  // F_SETFD, F_SETFL
+    // F_GETLK=5, F_SETLK=6, F_SETLKW=7, F_DUPFD_CLOEXEC=1030
+    if(cmd == 0 || cmd == 1030) {
+        int minfd = (int)arg;
+        if(minfd < 0) minfd = 0;
+        for(int newfd = minfd; newfd < FILE_PER_PROC; newfd++) {
+            if(p->filelist[newfd] == NULL) {
+                p->filelist[newfd] = file_dup(file);
+                p->fd_cloexec[newfd] = (cmd == 1030) ? 1 : 0;
+                return newfd;
+            }
+        }
+        return -1;
+    }
+    if(cmd == 1) return p->fd_cloexec[fd] ? 1 : 0;
+    if(cmd == 2) {
+        p->fd_cloexec[fd] = (arg & 1) ? 1 : 0;
+        return 0;
+    }
+    if(cmd == 3) return file->status_flags;
+    if(cmd == 4) {
+        file->status_flags &= ~(OPEN_APPEND | OPEN_NONBLOCK);
+        file->status_flags |= (arg & (OPEN_APPEND | OPEN_NONBLOCK));
+        return 0;
+    }
+    if(cmd == 5) {
+        if(arg != 0) {
+            struct {
+                int16 l_type;
+                int16 l_whence;
+                int64 l_start;
+                int64 l_len;
+                int32 l_pid;
+                int32 __pad;
+            } fl;
+            memset(&fl, 0, sizeof(fl));
+            fl.l_type = 2; // F_UNLCK
+            uvm_copyout(p->pgtbl, arg, (uint64)&fl, sizeof(fl));
+        }
+        return 0;
+    }
+    if(cmd == 6 || cmd == 7) {
+        return 0;
+    }
     return -1;
 }
 
 // SYS_ioctl (29) - 设备控制
 uint64 sys_ioctl()
 {
-    // 简化: 返回0
-    return 0;
+    int fd;
+    uint32 req;
+    uint64 argp;
+    arg_uint32(0, (uint32*)&fd);
+    arg_uint32(1, &req);
+    arg_uint64(2, &argp);
+
+    proc_t* p = myproc();
+    if(fd < 0 || fd >= FILE_PER_PROC || p->filelist[fd] == NULL)
+        return -1;
+
+    file_t* file = p->filelist[fd];
+    if(file->type != FD_DEVICE || file->major != DEV_CONSOLE)
+        return -1;
+
+    // 常见终端 ioctl：TCGETS/TCSETS/TIOCGWINSZ/TIOCSWINSZ/TIOC*PGRP
+    if(req == 0x5401) {
+        uvm_copyout(p->pgtbl, argp, (uint64)&console_termios, sizeof(console_termios));
+        return 0;
+    }
+    if(req == 0x5402 || req == 0x5403 || req == 0x5404) {
+        if(argp != 0) {
+            uvm_copyin(p->pgtbl, (uint64)&console_termios, argp, sizeof(console_termios));
+        }
+        return 0;
+    }
+    if(req == 0x5413) {
+        uvm_copyout(p->pgtbl, argp, (uint64)&console_winsize, sizeof(console_winsize));
+        return 0;
+    }
+    if(req == 0x5414) {
+        if(argp != 0) {
+            uvm_copyin(p->pgtbl, (uint64)&console_winsize, argp, sizeof(console_winsize));
+        }
+        return 0;
+    }
+    if(req == 0x540F) { // TIOCGPGRP
+        int pgrp = p->pid;
+        if(argp != 0) {
+            uvm_copyout(p->pgtbl, argp, (uint64)&pgrp, sizeof(pgrp));
+        }
+        return 0;
+    }
+    if(req == 0x5410 || req == 0x540E || req == 0x5422) { // TIOCSPGRP/TIOCSCTTY/TIOCNOTTY
+        return 0;
+    }
+    return -1;
 }
 
 // SYS_mprotect (226) - 修改内存保护
 uint64 sys_mprotect()
 {
-    // 简化: 返回成功
+    uint64 addr, len64;
+    uint32 prot;
+
+    arg_uint64(0, &addr);
+    arg_uint64(1, &len64);
+    arg_uint32(2, &prot);
+
+    if(len64 == 0) {
+        return 0;
+    }
+    if(addr % PGSIZE != 0) {
+        return -1;
+    }
+
+    uint64 len = PG_ROUND_UP(len64);
+    uint64 end = addr + len;
+    if(addr < PGSIZE || end < addr || end > myproc()->heap_top) {
+        return -1;
+    }
+
+    int perm = PTE_U | PTE_V;
+    if(prot & 1) perm |= PTE_R;
+    if(prot & 2) perm |= PTE_W;
+    if(prot & 4) perm |= PTE_X;
+
+    for(uint64 va = addr; va < end; va += PGSIZE) {
+        pte_t* pte = vm_getpte(myproc()->pgtbl, va, false);
+        if(pte == NULL || !(*pte & PTE_V) || !(*pte & PTE_U)) {
+            return -1;
+        }
+        uint64 pa = (uint64)PTE_TO_PA(*pte);
+        *pte = PA_TO_PTE(pa) | perm;
+    }
+
     return 0;
 }

@@ -3,7 +3,7 @@ include common.mk
 KERN = kernel
 USER = user
 MKFS = mkfs
-KERNEL_ELF = kernel-qemu
+KERNEL_ELF = kernel-rv
 FS_IMG = sdcard.img
 CPUNUM = 2
 

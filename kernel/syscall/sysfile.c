@@ -18,8 +18,77 @@
 #define O_TRUNC     0x200
 #define O_APPEND    0x400
 #define O_DIRECTORY 0x200000
+#define O_DIRECTORY_LINUX 0x10000
+#define O_NONBLOCK  0x800
+#define O_CLOEXEC   0x80000
 
 #define AT_FDCWD    (-100)
+
+static void normalize_absolute_path(const char* path, char* out)
+{
+    int len = 1;
+    out[0] = '/';
+    out[1] = '\0';
+
+    const char* p = path;
+    while(*p != '\0') {
+        while(*p == '/') p++;
+        if(*p == '\0') break;
+
+        const char* seg = p;
+        int seg_len = 0;
+        while(p[seg_len] != '\0' && p[seg_len] != '/') seg_len++;
+        p += seg_len;
+
+        if(seg_len == 1 && seg[0] == '.') continue;
+        if(seg_len == 2 && seg[0] == '.' && seg[1] == '.') {
+            if(len > 1) {
+                len--;
+                while(len > 1 && out[len - 1] != '/') len--;
+                out[len] = '\0';
+            }
+            continue;
+        }
+
+        if(len > 1 && len < DIR_PATH_LEN - 1)
+            out[len++] = '/';
+        for(int i = 0; i < seg_len && len < DIR_PATH_LEN - 1; i++)
+            out[len++] = seg[i];
+        out[len] = '\0';
+    }
+}
+
+static void resolve_user_path_local(const char* path, char* out)
+{
+    proc_t* p = myproc();
+    const char* cwd = "/";
+    if(p && p->cwd_path[0] != '\0')
+        cwd = p->cwd_path;
+
+    if(path[0] == '/') {
+        normalize_absolute_path(path, out);
+        return;
+    }
+
+    char joined[DIR_PATH_LEN];
+    safestrcpy(joined, cwd, sizeof(joined));
+    int len = strlen(joined);
+    if(len == 0) {
+        joined[0] = '/';
+        joined[1] = '\0';
+        len = 1;
+    }
+    if(len > 1 && joined[len - 1] == '/') {
+        joined[len - 1] = '\0';
+        len--;
+    }
+    if(len < DIR_PATH_LEN - 1) {
+        joined[len++] = '/';
+        joined[len] = '\0';
+    }
+    safestrcpy(joined + len, path, sizeof(joined) - len);
+    normalize_absolute_path(joined, out);
+}
 
 // 获取第n个参数对应的fd和这个fd对应的file
 // 成功返回0 失败返回-1
@@ -53,6 +122,7 @@ int fd_alloc(file_t* file)
     for(int fd = 0; fd < FILE_PER_PROC; fd++) {
         if(p->filelist[fd] == NULL) {
             p->filelist[fd] = file;
+            p->fd_cloexec[fd] = 0;
             return fd;
         }
     }
@@ -67,15 +137,16 @@ int fd_alloc(file_t* file)
 uint64 sys_open()
 {
     char path[DIR_PATH_LEN];
+    char resolved[DIR_PATH_LEN];
     uint32 flags;
 
     arg_str(0, path, DIR_PATH_LEN);
     arg_uint32(1, &flags);
+    resolve_user_path_local(path, resolved);
 
     file_t* file = NULL;
-    
-    // 特殊处理 "." 打开当前目录 (FAT32 根目录)
-    if(path[0] == '.' && path[1] == '\0') {
+
+    if(strncmp(resolved, "/", DIR_PATH_LEN) == 0 && !(flags & O_CREATE)) {
         file = file_alloc();
         if(file) {
             file->type = FD_FAT32;
@@ -85,7 +156,10 @@ uint64 sys_open()
             file->ip = NULL;
             file->fat32_cluster = fat32_get_root_cluster();
             file->fat32_size = 0;
+            safestrcpy(file->path, "/", sizeof(file->path));
+            file->status_flags = OPEN_RDONLY | OPEN_DIRECTORY;
             int fd = fd_alloc(file);
+            if(fd >= 0 && (flags & O_CLOEXEC)) myproc()->fd_cloexec[fd] = 1;
             if(fd == -1) file_close(file);
             return fd;
         }
@@ -93,38 +167,58 @@ uint64 sys_open()
 
     // 先处理创建场景：始终使用 tmpfs
     if(flags & O_CREATE) {
-        file = tmpfs_open(path, flags);
+        file = tmpfs_open(resolved, flags);
         if(file != NULL) {
             int type = tmpfs_get_type(file->tmpfs_idx);
-            if((flags & O_DIRECTORY) && type != TMPFS_TYPE_DIR) {
+            if((flags & (O_DIRECTORY | O_DIRECTORY_LINUX)) && type != TMPFS_TYPE_DIR) {
                 file_close(file);
                 return -1;
             }
             if(type == TMPFS_TYPE_DIR) {
                 file->writable = false;
+                file->status_flags |= OPEN_DIRECTORY;
+            }
+            file->status_flags = (file->status_flags & ~(OPEN_APPEND | OPEN_NONBLOCK | OPEN_CLOEXEC))
+                               | (flags & (O_APPEND | O_NONBLOCK));
+            if((flags & O_TRUNC) && file->writable) {
+                if(file_truncate(file) < 0) {
+                    file_close(file);
+                    return -1;
+                }
             }
             int fd = fd_alloc(file);
+            if(fd >= 0 && (flags & O_CLOEXEC)) myproc()->fd_cloexec[fd] = 1;
             if(fd == -1) file_close(file);
             return fd;
         }
     }
 
     // 非创建场景优先尝试 FAT32（用于 SD 卡测试文件）
-    file = file_open_fat32(path, flags);
+    file = file_open_fat32(resolved, flags);
     if(file == NULL) {
         // 如果 FAT32 没找到，再尝试 tmpfs 中已存在的条目
-        if(tmpfs_exists(path)) {
-            file = tmpfs_open(path, flags);
+        if(tmpfs_exists(resolved)) {
+            file = tmpfs_open(resolved, flags);
             if(file != NULL) {
                 int type = tmpfs_get_type(file->tmpfs_idx);
-                if((flags & O_DIRECTORY) && type != TMPFS_TYPE_DIR) {
+                if((flags & (O_DIRECTORY | O_DIRECTORY_LINUX)) && type != TMPFS_TYPE_DIR) {
                     file_close(file);
                     return -1;
                 }
                 if(type == TMPFS_TYPE_DIR) {
                     file->writable = false;
+                    file->status_flags |= OPEN_DIRECTORY;
+                }
+                file->status_flags = (file->status_flags & ~(OPEN_APPEND | OPEN_NONBLOCK | OPEN_CLOEXEC))
+                                   | (flags & (O_APPEND | O_NONBLOCK));
+                if((flags & O_TRUNC) && file->writable) {
+                    if(file_truncate(file) < 0) {
+                        file_close(file);
+                        return -1;
+                    }
                 }
                 int fd = fd_alloc(file);
+                if(fd >= 0 && (flags & O_CLOEXEC)) myproc()->fd_cloexec[fd] = 1;
                 if(fd == -1) file_close(file);
                 return fd;
             }
@@ -142,13 +236,29 @@ uint64 sys_open()
         } else {
             open_mode |= MODE_READ;  // O_RDONLY = 0
         }
-        file = file_open(path, open_mode);
+        file = file_open(resolved, open_mode);
     }
     
     if(file == NULL)
         return -1;
+
+    if((flags & (O_DIRECTORY | O_DIRECTORY_LINUX)) && file->type != FD_DIR && file->type != FD_TMPFS && !(file->type == FD_FAT32 && strncmp(resolved, "/", DIR_PATH_LEN) == 0)) {
+        file_close(file);
+        return -1;
+    }
+    file->status_flags = (file->status_flags & ~(OPEN_APPEND | OPEN_NONBLOCK | OPEN_CLOEXEC))
+                       | (flags & (O_APPEND | O_NONBLOCK));
+    if(flags & (O_DIRECTORY | O_DIRECTORY_LINUX))
+        file->status_flags |= OPEN_DIRECTORY;
+    if((flags & O_TRUNC) && file->writable) {
+        if(file_truncate(file) < 0) {
+            file_close(file);
+            return -1;
+        }
+    }
     
     int fd = fd_alloc(file);
+    if(fd >= 0 && (flags & O_CLOEXEC)) myproc()->fd_cloexec[fd] = 1;
     if(fd == -1)
         file_close(file);
 
@@ -167,6 +277,7 @@ uint64 sys_close()
         return -1;
 
     myproc()->filelist[fd] = NULL;
+    myproc()->fd_cloexec[fd] = 0;
     file_close(file);
 
     return 0;
@@ -240,7 +351,10 @@ uint64 sys_dup()
         return -1;
     
     new_fd = fd_alloc(file);
-    file_dup(file);
+    if(new_fd >= 0) {
+        file_dup(file);
+        myproc()->fd_cloexec[new_fd] = 0;
+    }
 
     return new_fd;
 }
@@ -293,38 +407,17 @@ uint64 sys_getdir()
 uint64 sys_mkdir()
 {
     char path[DIR_PATH_LEN];
+    char resolved[DIR_PATH_LEN];
     arg_str(0, path, DIR_PATH_LEN);
+    resolve_user_path_local(path, resolved);
 
     // 尝试在 tmpfs 中创建目录
-    int idx = tmpfs_create(path, 2);  // TMPFS_TYPE_DIR = 2
+    int idx = tmpfs_create(resolved, 2);  // TMPFS_TYPE_DIR = 2
     if(idx >= 0) return 0;
 
-    inode_t* inode = path_create_inode(path, FT_DIR, 0, 0);
+    inode_t* inode = path_create_inode(resolved, FT_DIR, 0, 0);
 
     return (inode == NULL) ? -1 : 0;
-}
-
-// 修改当前所在的目录
-// char* path
-// 成功返回0 失败返回-1
-uint64 sys_chdir()
-{
-    char path[DIR_PATH_LEN];
-    arg_str(0, path, DIR_PATH_LEN);
-
-    // 先尝试 tmpfs 目录
-    proc_t* p = myproc();
-    if(tmpfs_chdir(path) == 0) {
-        // 标记正在使用 tmpfs 目录，避免旧的 cwd 干扰
-        if(p && p->cwd) {
-            inode_free(p->cwd);
-            p->cwd = NULL;
-        }
-        return 0;
-    }
-
-    // 否则按原有简单文件系统处理
-    return dir_change(path);
 }
 
 // 文件链接
@@ -334,10 +427,15 @@ uint64 sys_chdir()
 uint64 sys_link()
 {
     char old_path[DIR_PATH_LEN], new_path[DIR_PATH_LEN];
+    char old_resolved[DIR_PATH_LEN], new_resolved[DIR_PATH_LEN];
     arg_str(0, old_path, DIR_PATH_LEN);
     arg_str(1, new_path, DIR_PATH_LEN);
+    resolve_user_path_local(old_path, old_resolved);
+    resolve_user_path_local(new_path, new_resolved);
 
-    return path_link(old_path, new_path);
+    if(tmpfs_exists(old_resolved))
+        return tmpfs_link(old_resolved, new_resolved);
+    return path_link(old_resolved, new_resolved);
 }
 
 // 文件删除链接 (link=0 则删除文件)
@@ -346,7 +444,10 @@ uint64 sys_link()
 uint64 sys_unlink()
 {
     char path[DIR_PATH_LEN];
+    char resolved[DIR_PATH_LEN];
     arg_str(0, path, DIR_PATH_LEN);
+    resolve_user_path_local(path, resolved);
 
-    return path_unlink(path);
+    if(tmpfs_unlink(resolved) == 0) return 0;
+    return path_unlink(resolved);
 }
