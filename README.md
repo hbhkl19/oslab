@@ -1,52 +1,64 @@
-# 进击的内核
+# RISC-V Teaching Kernel
 
-该项目为2025年全国大学生计算机系统能力大赛 - 操作系统设计赛-中西部区域赛-内核实现赛参赛作品，采用 QEMU（virt, riscv64）启动，直接加载 `kernel-qemu`，并挂载预置用户测试的 FAT32 `sdcard.img`。启动后 init 进程会自动扫描 SD 根目录，串行运行每个 ELF 测试，输出到串口，全部完成后主动退出 QEMU。
+A small RISC-V operating-system kernel developed for the 2025 National Student Computer System Capability Competition (Operating System Design Track). The kernel boots on QEMU `virt`, runs user programs from a FAT32 disk image, and provides a practical environment for studying operating-system internals.
 
-## 环境依赖
-- RISC-V 64 位裸机交叉编译链已加入 `PATH`（如 `riscv64-unknown-elf-gcc`，可使用 `res/kendryte-toolchain-ubuntu-amd64-8.2.0-20190409.tar.xz`）。
-- `qemu-system-riscv64`（验证于 7.0.0）。
-- Linux 主机，安装 `make`。
+## Highlights
 
-## 编译
-```bash
-export PATH=$PATH:/path/to/riscv-toolchain/bin
-make all     # 生成 initcode、kernel-qemu，复用已有 sdcard.img
+- Process creation, scheduling, waiting, and user-fault isolation
+- System-call handling and Linux-compatible interfaces
+- FAT32-backed file access and a lightweight writable tmpfs
+- Per-process current working directories and relative-path `*at` operations
+- Eager `mmap`, region-aware `munmap`, and page-permission updates through `mprotect`
+- Multi-hart boot support on RISC-V
+- Automated QEMU test runner with focused user-space regression tests
+
+## Architecture
+
+```text
+kernel/
+├── boot/       Boot and platform initialization
+├── dev/        Device and SBI support
+├── fs/         FAT32, tmpfs, and file abstractions
+├── mem/        Physical/virtual memory and mmap metadata
+├── proc/       Processes, scheduling, fork/clone, and wait
+├── syscall/    System-call dispatch and implementations
+└── trap/       Interrupts, exceptions, and user-fault handling
+
+user/
+├── initcode/   Test runner launched by the kernel
+└── src/        User programs and regression tests
 ```
-产物：
-- `kernel-qemu`：传给 QEMU 的内核 ELF。
-- `sdcard.img`：已包含预编译用户测试的 FAT32 镜像（默认无需重新制作）。
-- `sbi-qemu`：仅在自定义 SBI 时需要；使用 `-bios default` 可忽略。
 
-清理：
+## Build and Run
+
+Requirements:
+
+- Linux
+- RISC-V 64-bit bare-metal toolchain
+- QEMU with `qemu-system-riscv64`
+- GNU Make
+
 ```bash
-make clean
+make all
+make qemu
 ```
 
-## 在 QEMU 运行
+For debugging:
+
 ```bash
-qemu-system-riscv64 -machine virt -kernel kernel-qemu -m 128M -nographic -smp 2 -bios default \
-  -drive file=sdcard.img,if=none,format=raw,id=x0 \
-  -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
-  -device virtio-net-device,netdev=net -netdev user,id=net
+make qemu-gdb
 ```
-说明：
-- `-initrd initrd.img` 可选，未生成则省略。
-- 启动会打印 `===== OS Test Runner =====`，依次执行 `/` 下 ELF，结束后退出 QEMU。
-- 调试可用 `make qemu-gdb`（暂停等待 GDB），或直接 `make qemu`。
 
-## 测试流程简介
-- init 代码位于 `user/initcode/init.c`，编译时写入 `include/proc/initcode.h`。
-- init 打开 `sdcard.img` 的 FAT32 根目录，用 `getdents64` 枚举普通文件，检测 ELF 头后用 `execve` 运行，避免重复执行同一文件。
-- 测试逐个串行运行；缺失或跳过的项不计分。
+The default branch contains the competition-oriented kernel implementation. Earlier lab stages are preserved as separate branches.
 
-## 目录结构
-- `kernel/`：内核、系统调用、驱动、文件系统
-- `user/`：用户态源码；测试程序打包进 `sdcard.img`。
-- `mkfs/`：镜像制作工具。
-- `include/`：公共头文件。
+## Selected Engineering Work
 
+- Reworked relative-path handling around a per-process working directory
+- Added focused tests for `openat`, `linkat`, `unlinkat`, `mmap`, `munmap`, and `mprotect`
+- Improved tmpfs capacity and removed fixed 4 KiB I/O assumptions
+- Fixed multi-hart initialization when the boot hart is not hart 0
+- Prevented a single user-space exception from crashing the whole kernel
 
-## 常用操作
-- 构建内核：`make all`
-- 直接运行：`make qemu`
-- GDB 调试：`make qemu-gdb` 后运行 `riscv64-unknown-elf-gdb -x .gdbinit kernel-qemu`
+## Scope
+
+This is an educational and competition-oriented kernel rather than a complete Linux implementation. Several Linux subsystems and edge-case semantics remain intentionally incomplete.
